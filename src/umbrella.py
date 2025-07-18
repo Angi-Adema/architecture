@@ -15,7 +15,7 @@ from .pyramid import pyramid
 # ---------------- GUI Setup ---------------- #
 master_window = Tk()
 master_window.title('Umbrella')
-master_window.iconbitmap(os.path.join(os.getcwd(), 'logo.ico'))
+# master_window.iconbitmap(os.path.join(os.getcwd(), 'logo.ico'))  # Uncomment if you have a logo.ico file
 
 root = Frame(master_window)
 root.grid(row=0, column=0, sticky=W+E)
