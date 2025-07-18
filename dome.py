@@ -4,18 +4,18 @@ import numpy as np
 # import csv
 # import xlsxwriter
 
-H = 4.461
-Re = 0.96
-Ne = 12
+H = 4.298
+Re = 1.98
+Ne = 6
 
 N = 20
 
-def pyramid(H, Re, Ne, N):
+def dome(H, Re, Ne, N):
 
     psi = np.pi/Ne
 
-    def get_z(x):
-        z = (Re/H)*x
+    def get_z(x,y):
+        z = (Re*np.cos(psi)**2/H**2)*(x**2+y**2)
         return z
 
     nodes_tot = int((N+1)**2)
@@ -38,7 +38,7 @@ def pyramid(H, Re, Ne, N):
             n = n + 1
     #Defining z coords
     for i in range(nodes_tot):
-        z_i[i] = get_z(x_i[i])
+        z_i[i] = get_z(x_i[i],y_i[i])
 
     #Creating nodes array
     nodes_ij = np.zeros((nodes_tot,4))
@@ -50,6 +50,9 @@ def pyramid(H, Re, Ne, N):
 
     # fig = plt.figure()
     # ax = fig.add_subplot(111,projection='3d')
+    # ax.set_xlim([-H,H])
+    # ax.set_ylim([-H,H])
+    # ax.set_zlim([-H,H])
     # ax.scatter(nodes_ij[:,1],nodes_ij[:,2],nodes_ij[:,3])
     # plt.tight_layout()
     # plt.show()
@@ -92,7 +95,7 @@ def pyramid(H, Re, Ne, N):
                 ele_ij[ele-1][4] = ele + (N+1)
                 ele = ele + 1
 
-    # coords = xlsxwriter.Workbook('Pyramid'+str(Ne)+'_H'+str(H)+'_R'+str(Re)+'_N'+str(N)+'.xlsx')
+    # coords = xlsxwriter.Workbook('Parabola'+str(Ne)+'_H'+str(H)+'_R'+str(Re)+'_N'+str(N)+'.xlsx')
     # worksheet = coords.add_worksheet('Nodes')
     # for i in range(nodes_tot):
         # worksheet.write('A%d' % (i+1), nodes_ij[i][0])
