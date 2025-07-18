@@ -8,9 +8,9 @@ from tkinter import *
 from tkinter import messagebox
 from PIL import ImageTk, Image
 
-from dome import dome
-from hypar import hypar
-from pyramid import pyramid
+from .dome import dome
+from .hypar import hypar
+from .pyramid import pyramid
 
 # ---------------- GUI Setup ---------------- #
 master_window = Tk()
