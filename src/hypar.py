@@ -1,14 +1,4 @@
 import numpy as np
-# import matplotlib.pyplot as plt
-# from mpl_toolkits.mplot3d import axes3d
-# import csv
-# import xlsxwriter
-
-H = 9
-Re = 2
-Ne = 6
-
-N = 21
 
 def hypar(H, Re, Ne, N):
 
@@ -45,12 +35,14 @@ def hypar(H, Re, Ne, N):
         yr = x*np.sin(theta*n) + y*np.cos(theta*n)
         return xr, yr
 
+    # -- Geometry generation --
     xp_base_i = np.linspace(0,H,N+1)
     xp_index_original = np.linspace(0,N,N+1)
     xp_index_i = np.linspace(0,N,N+1)
     nodes_tot = int((N+1)**2)
     xp_i = np.zeros(nodes_tot)
     index_i = np.zeros(nodes_tot)
+
     n = 0
     for col in range(N+1):
         for i in range(col+1):
@@ -59,43 +51,79 @@ def hypar(H, Re, Ne, N):
         for s in range(N+1):
             xp_i[n] = xp_base_i[s]
             index_i[n] = xp_index_i[s]
-            n = n + 1
+            n += 1
 
     yp_i = np.zeros(nodes_tot)
     n = 0
     for col in range(N+1):
         for i in range(N+1):
-            if i > col:
-                index = col
-            else:
-                index = i
+            index = min(i, col)
             yp_i[n] = np.linspace(0,get_K(xp_i[n]),int(index_i[n]+1))[int(index)]
-            n = n + 1
-            
-    z_i = np.zeros(nodes_tot)
-    for i in range(nodes_tot):
-        z_i[i] = get_z(xp_i[i],yp_i[i])
+            n += 1
 
-    nodes_ij = np.zeros((3,nodes_tot))
-    for i in range(nodes_tot):
-        nodes_ij[0][i] = get_xy(xp_i[i],yp_i[i])[0]
-        nodes_ij[1][i] = get_xy(xp_i[i],yp_i[i])[1]
-        nodes_ij[2][i] = get_z(xp_i[i],yp_i[i])
+    z_i = np.array([get_z(xp_i[i], yp_i[i]) for i in range(nodes_tot)])
+    nodes_ij = np.array([get_xy(xp_i[i], yp_i[i]) + (get_z(xp_i[i], yp_i[i]),) for i in range(nodes_tot)]).T
 
-    nodes_mod_ij = nodes_ij
-    for col in range(N+1):
-        for i in range(N+1):
+    nodes_mod_ij = np.copy(nodes_ij)
+    for col in range(N + 1):
+        for i in range(N + 1):
             if i < col:
-                index = int(i + (N+1)*col)
-                xyr = sym(nodes_ij[0][index],nodes_ij[1][index])
+                index = int(i + (N + 1) * col)
+                xyr = sym(nodes_ij[0][index], nodes_ij[1][index])
                 nodes_mod_ij[0][index] = xyr[0]
                 nodes_mod_ij[1][index] = xyr[1]
 
-    nodes_rot_ij = np.zeros((3,nodes_tot))
+    nodes_rot_ij = np.zeros((3, nodes_tot))
     for i in range(nodes_tot):
-        nodes_rot_ij[0][i] = rotate(nodes_mod_ij[0][i],nodes_mod_ij[1][i],-psi,1)[0]
-        nodes_rot_ij[1][i] = rotate(nodes_mod_ij[0][i],nodes_mod_ij[1][i],-psi,1)[1]
-        nodes_rot_ij[2][i] = nodes_mod_ij[2][i]
+        x, y = rotate(nodes_mod_ij[0][i], nodes_mod_ij[1][i], -psi, 1)
+        nodes_rot_ij[:, i] = [x, y, nodes_mod_ij[2][i]]
+
+    ele_num = int(N ** 2)
+    ele_ij = np.zeros((ele_num, 5))
+    n = 0
+    for col in range(N):
+        for row in range(N):
+            base = int(col + 1 + (N) * col + row)
+            ele_ij[n] = [n + 1, base, base + N + 1, base + N + 2, base + 1]
+            n += 1
+
+    nod_ij = np.zeros((nodes_tot, 4))
+    for n in range(nodes_tot):
+        nod_ij[n] = [n + 1, nodes_rot_ij[0][n], nodes_rot_ij[1][n], nodes_rot_ij[2][n]]
+
+    return nod_ij, ele_ij
+
+
+
+# import matplotlib.pyplot as plt
+# from mpl_toolkits.mplot3d import axes3d
+# import csv
+# import xlsxwriter
+
+# H = 9
+# Re = 2
+# Ne = 6
+
+# N = 21
+
+    # z_i = np.zeros(nodes_tot)
+    # for i in range(nodes_tot):
+    #     z_i[i] = get_z(xp_i[i],yp_i[i])
+
+    # nodes_mod_ij = nodes_ij
+    # for col in range(N+1):
+    #     for i in range(N+1):
+    #         if i < col:
+    #             index = int(i + (N+1)*col)
+    #             xyr = sym(nodes_ij[0][index],nodes_ij[1][index])
+    #             nodes_mod_ij[0][index] = xyr[0]
+    #             nodes_mod_ij[1][index] = xyr[1]
+
+    # nodes_rot_ij = np.zeros((3,nodes_tot))
+    # for i in range(nodes_tot):
+    #     nodes_rot_ij[0][i] = rotate(nodes_mod_ij[0][i],nodes_mod_ij[1][i],-psi,1)[0]
+    #     nodes_rot_ij[1][i] = rotate(nodes_mod_ij[0][i],nodes_mod_ij[1][i],-psi,1)[1]
+    #     nodes_rot_ij[2][i] = nodes_mod_ij[2][i]
 
     # fig = plt.figure()
     # ax = fig.add_subplot(111,projection='3d')
@@ -114,24 +142,24 @@ def hypar(H, Re, Ne, N):
     # plt.tight_layout()
     # plt.show()
 
-    ele_num = int(N**2)
-    ele_ij = np.zeros((ele_num,5))
-    n = 0
-    for col in range(N):
-        for row in range(N):
-            ele_ij[n][0] = int(n+1)
-            ele_ij[n][1] = int(col + 1 +(N)*col + row)
-            ele_ij[n][2] = int(ele_ij[n][1] + N + 1)
-            ele_ij[n][3] = int(ele_ij[n][2] + 1)
-            ele_ij[n][4] = int(ele_ij[n][1] + 1)
-            n = n + 1
+    # ele_num = int(N**2)
+    # ele_ij = np.zeros((ele_num,5))
+    # n = 0
+    # for col in range(N):
+    #     for row in range(N):
+    #         ele_ij[n][0] = int(n+1)
+    #         ele_ij[n][1] = int(col + 1 +(N)*col + row)
+    #         ele_ij[n][2] = int(ele_ij[n][1] + N + 1)
+    #         ele_ij[n][3] = int(ele_ij[n][2] + 1)
+    #         ele_ij[n][4] = int(ele_ij[n][1] + 1)
+    #         n = n + 1
 
-    nod_ij = np.zeros((nodes_tot,4))
-    for n in range(nodes_tot):
-        nod_ij[n][0] = int(n+1)
-        nod_ij[n][1] = nodes_rot_ij[0][n]
-        nod_ij[n][2] = nodes_rot_ij[1][n]
-        nod_ij[n][3] = nodes_rot_ij[2][n]
+    # nod_ij = np.zeros((nodes_tot,4))
+    # for n in range(nodes_tot):
+    #     nod_ij[n][0] = int(n+1)
+    #     nod_ij[n][1] = nodes_rot_ij[0][n]
+    #     nod_ij[n][2] = nodes_rot_ij[1][n]
+    #     nod_ij[n][3] = nodes_rot_ij[2][n]
 
     # coords = xlsxwriter.Workbook('Hypar'+str(Ne)+'_H'+str(H)+'_R'+str(Re)+'_N'+str(N)+'.xlsx')
     # worksheet = coords.add_worksheet('Nodes')
@@ -148,5 +176,3 @@ def hypar(H, Re, Ne, N):
         # worksheet2.write('D%d' % (i+1), ele_ij[i][3])
         # worksheet2.write('E%d' % (i+1), ele_ij[i][4])
     # coords.close()
-    
-    return nod_ij, ele_ij
