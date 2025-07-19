@@ -17,14 +17,14 @@ def pyramid(H, Re, Ne, N):
     n = 0
     for col in range(N+1):
         for i in range(N+1-col):
-            x_i[n] = x_base[i+col]
-            y_i[n] = x_base[col]*np.tan(psi)
+            x_i[n] = x_base_i[i+col]
+            y_i[n] = x_base_i[col]*np.tan(psi)
             n += 1
 
     for col in range(N):
         for i in range(N-col):
-            x_i[n] = x_base[i+1+col]
-            y_i[n] = -x_base[col+1]*np.tan(psi)
+            x_i[n] = x_base_i[i+1+col]
+            y_i[n] = -x_base_i[col+1]*np.tan(psi)
             n += 1
 
     #Defining z coords
