@@ -36,7 +36,7 @@ def dome(H, Re, Ne, N):
         nodes_ij[i] = [i + 1, x_i[i], y_i[i], z_i[i]]
 
     # Create element array
-    ele_tot = 2 * (N**2 + N)
+    ele_tot = 2 * (N**2 + N) + 1
     ele_ij = np.zeros((ele_tot,5))
     ele = 1
 
@@ -47,27 +47,29 @@ def dome(H, Re, Ne, N):
                 ele_ij[ele-1][1] = ele + col
                 ele_ij[ele-1][2] = ele_ij[ele-1][1] + (N+1) - col
                 ele_ij[ele-1][3] = ele_ij[ele-1][1] + 1
-                ele = ele + 1
             else:
                 ele_ij[ele-1][1] = ele + col
                 ele_ij[ele-1][2] = ele_ij[ele-1][1] + N - col
                 ele_ij[ele-1][3] = ele_ij[ele-1][2] + 1
                 ele_ij[ele-1][4] = ele_ij[ele-1][1] + 1
-                ele += 1
+            ele += 1
 
-        for col in range(N):
-            for i in range(N - col):
-                ele_ij[ele - 1][0] = ele
-                if i == 0:  # Triangle
-                    ele_ij[ele - 1][1] = ele + (N + 1)
-                    ele_ij[ele - 1][2] = 1 if col == 0 else ele + col
-                    ele_ij[ele - 1][3] = ele_ij[ele - 1][2] + 1
-                else:  # Quadrilateral
-                    ele_ij[ele - 1][1] = ele + N
-                    ele_ij[ele - 1][2] = i + 1 if col == 0 else ele + col
-                    ele_ij[ele - 1][3] = ele_ij[ele - 1][2] + 1
-                    ele_ij[ele - 1][4] = ele + (N + 1)
-                ele += 1
+    for col in range(N):
+        for i in range(N - col):
+            ele_ij[ele - 1][0] = ele
+            if i == 0:  # Triangle
+                ele_ij[ele - 1][1] = ele + (N + 1)
+                ele_ij[ele - 1][2] = 1 if col == 0 else ele + col
+                ele_ij[ele - 1][3] = ele_ij[ele - 1][2] + 1
+            else:  # Quadrilateral
+                ele_ij[ele - 1][1] = ele + N
+                ele_ij[ele - 1][2] = i + 1 if col == 0 else ele + col
+                ele_ij[ele - 1][3] = ele_ij[ele - 1][2] + 1
+                ele_ij[ele - 1][4] = ele + (N + 1)
+            ele += 1
+
+    # Safety check: Make sure we didn't exceed the allocated size
+    assert ele <= ele_tot, f"Too many elements generated: {ele} > {ele_tot}"
 
     return nodes_ij, ele_ij
 
