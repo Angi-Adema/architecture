@@ -36,7 +36,7 @@ def dome(H, Re, Ne, N):
         nodes_ij[i] = [i + 1, x_i[i], y_i[i], z_i[i]]
 
     # Create element array
-    ele_tot = N**2+N
+    ele_tot = 2 * (N**2 + N)
     ele_ij = np.zeros((ele_tot,5))
     ele = 1
 
