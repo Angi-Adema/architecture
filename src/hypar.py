@@ -1,5 +1,7 @@
 import numpy as np
 
+# Eliminated the hardcoded values because in umbrella.py, when the user hits Run, the values entered by the user is dynamically passed into the geometry functions.
+
 def hypar(H, Re, Ne, N):
 
     psi = np.pi/Ne
@@ -42,8 +44,8 @@ def hypar(H, Re, Ne, N):
     nodes_tot = int((N+1)**2)
     xp_i = np.zeros(nodes_tot)
     index_i = np.zeros(nodes_tot)
-
     n = 0
+
     for col in range(N+1):
         for i in range(col+1):
             xp_base_i[i] = xp_base_i[int(xp_index_i[col])]
@@ -61,9 +63,13 @@ def hypar(H, Re, Ne, N):
             yp_i[n] = np.linspace(0,get_K(xp_i[n]),int(index_i[n]+1))[int(index)]
             n += 1
 
+    # List comprehensions are often more readable and slightly faster than basic for loops.
     z_i = np.array([get_z(xp_i[i], yp_i[i]) for i in range(nodes_tot)])
+
+    # This part separates the steps, compute xp_i and yp_i arrays for raw coordinates, then call get_xy() and get_z() to get actual x, y, z for each node then create a clean nodes_ij array.
     nodes_ij = np.array([get_xy(xp_i[i], yp_i[i]) + (get_z(xp_i[i], yp_i[i]),) for i in range(nodes_tot)]).T
 
+    # Here we kept sym() for mirroring, rotate() for final orientation and nodes_mod_ij for intermediate transformation steps but now it is all separated from drawing/export logic making it more modular.
     nodes_mod_ij = np.copy(nodes_ij)
     for col in range(N + 1):
         for i in range(N + 1):
@@ -91,6 +97,7 @@ def hypar(H, Re, Ne, N):
     for n in range(nodes_tot):
         nod_ij[n] = [n + 1, nodes_rot_ij[0][n], nodes_rot_ij[1][n], nodes_rot_ij[2][n]]
 
+    # nod_ij and ele_ij are now exported using umbrella.py keeping hypar.py focused purely on geometry logic. worksheet.write() was removed as it is hardcoded and should be dynamic.
     return nod_ij, ele_ij
 
 
