@@ -2,15 +2,15 @@
 # It helps in determining how files should be treated by Git and other tools.
 
 # Ignore these from language stats
-*.xlsx linguist-generated
-*.png linguist-generated
-*.ico linguist-generated
+# *.xlsx linguist-generated
+# *.png linguist-generated
+# *.ico linguist-generated
 
 # Explicitly mark Python as source code
-*.py linguist-language=Python
+#*.py linguist-language=Python
 
 # Just in case .html sneaks in
-*.html linguist-documentation
+#*.html linguist-documentation
 
 *.tex linguist-documentation
 *.bib linguist-documentation
