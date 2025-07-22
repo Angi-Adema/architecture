@@ -1,5 +1,7 @@
 import numpy as np
 
+# Eliminated the hardcoded values because in umbrella.py, when the user hits Run, the values entered by the user is dynamically passed into the geometry functions.
+
 def dome(H, Re, Ne, N):
 
     psi = np.pi/Ne
@@ -40,6 +42,7 @@ def dome(H, Re, Ne, N):
     ele_ij = np.zeros((ele_tot,5))
     ele = 1
 
+    # When i == 0, we build triangle elements, otherwise we build quadrilaterals using four nodes.
     for col in range(N):
         for i in range(N-col):
             ele_ij[ele-1][0] = ele
@@ -68,7 +71,7 @@ def dome(H, Re, Ne, N):
                 ele_ij[ele - 1][4] = ele + (N + 1)
             ele += 1
 
-    # Safety check: Make sure we didn't exceed the allocated size
+    # Safety check: Make sure we didn't exceed the allocated size. This is critical as it confirms that the number of elements you're assigning does not exceed the space you allocated for them.
     assert ele <= ele_tot, f"Too many elements generated: {ele} > {ele_tot}"
 
     return nodes_ij, ele_ij
