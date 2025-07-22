@@ -14,7 +14,7 @@ This Python-based desktop application provides a visual and data-generating tool
 
 ## 📁 Folder Structure
 
-<pre> ```/umbrella-geometry-generator/
+<pre>/umbrella-geometry-generator/
 │
 ├── umbrella.py # Main GUI entry point
 ├── /src/
@@ -26,7 +26,7 @@ This Python-based desktop application provides a visual and data-generating tool
 │
 ├── logo.ico # Application icon
 ├── Geometry.png # Diagram shown in GUI
-└── README.md```</pre>
+└── README.md</pre>
 
 ## 🛠 Requirements
 
