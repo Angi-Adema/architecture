@@ -9,10 +9,12 @@ from tkinter import *
 from tkinter import messagebox
 from PIL import ImageTk, Image
 
+# The goal is to keep the project modular and scalable, that being said I have restructured the files so the main file 'umbrella.py' is outside of the 'src' folder which holds all the geometry functions. Here I have updated the file paths accordingly.
 from src.dome import dome
 from src.hypar import hypar
 from src.pyramid import pyramid
 
+# This block of code supports both the development environment as well as the PyInstaller .exe bundled packaging. This also prevents errors when __file__ doesn't work inside a compiled binary.
 # ---------------- Setup Paths ---------------- #
 if getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS  # For bundled assets like images
@@ -29,7 +31,7 @@ master_window = Tk()
 master_window.title('Umbrella')
 icon_path = os.path.join(base_path, 'logo.ico')
 master_window.iconbitmap(icon_path)
-#master_window.iconbitmap(os.path.join(os.getcwd(), 'logo.ico'))
+#master_window.iconbitmap(os.path.join(os.getcwd(), 'logo.ico'))  See not above on Setup Paths.
 
 root = Frame(master_window)
 root.grid(row=0, column=0, sticky=W+E)
@@ -67,22 +69,22 @@ var_pyramid = IntVar()
 var_dome = IntVar()
 
 # If not planning to reuse or reference this, we would not assign this to a variable. If we do need to change the button later, use this:
-#    c_hypar = Checkbutton(root, text='Generate hypar tympan', font=font_type, variable=var_hypar)
-#    c_hypar.grid(sticky=W, row=6, column=0)
+# c_hypar = Checkbutton(root, text='Generate hypar tympan', font=font_type, variable=var_hypar)
+# c_hypar.grid(sticky=W, row=6, column=0)
 # This way, c_hypar holds a reference to the widget.
 Checkbutton(root, text='Generate hypar tympan', font=font_type, variable=var_hypar).grid(sticky=W, row=6, column=0)
 Checkbutton(root, text='Generate pyramidal tympan', font=font_type, variable=var_pyramid).grid(sticky=W, row=7, column=0)
 Checkbutton(root, text='Generate parabolic tympan', font=font_type, variable=var_dome).grid(sticky=W, row=8, column=0)
 
-# Load and display schematic image once
-#img_path = os.path.join(os.getcwd(), 'Geometry.png')   # Combine current working directory with image to create the full file path
-
+# Load and display schematic image only once, original code did this twice which took up a lot of memory and slowed the program substantially.
+# img_path = os.path.join(os.getcwd(), 'Geometry.png')   
+# # Combine current working directory with image to create the full file path
 # ---------------- Load Schematic Image ---------------- #
 img_path = os.path.join(base_path, 'Geometry.png')
-if os.path.exists(img_path):  # Check if the file path exists before trying to open it to prevent file not found errors
+if os.path.exists(img_path):  # Check if the file path exists before trying to open it to prevent file not found errors. Prevents crashes if image is missing.
     img = Image.open(img_path)  # Uses PIL (Python Imaging Library) to open the image file
     ratio = 0.7
-    img_resized = img.resize((int(img.width * ratio), int(img.height * ratio)))  # Scales the original image down to 70% its original size
+    img_resized = img.resize((int(img.width * ratio), int(img.height * ratio)))  # Scales the image cleanly without reloading or redundant PhotoImage calls.
     schematic = ImageTk.PhotoImage(img_resized)  # Converts the resized image to a format Tkinter can display (ImageTk.PhotoImage)
     img_label = Label(image=schematic)
     img_label.image = schematic  # Prevent garbage collection
@@ -92,6 +94,7 @@ if os.path.exists(img_path):  # Check if the file path exists before trying to o
 
 # ---------------- Run Function ---------------- #
 def run():
+    # Before there was no error handling and the program would crash if a field was left blank or if the user entered an invalid value. Now we prevent program crashing and gives users a helpful pop-up with instructions on what went wrong instead of a terminal stacktrace.
     try:
         Ne = int(ent_Ne.get())
         H = float(ent_H.get())
@@ -101,11 +104,11 @@ def run():
         messagebox.showerror("Input Error", "Please enter valid numerical values.")
         return
 
-    # Reusable helper function. Reduces redundant code of 30+ lines for each geometry type. Easier to maintain and update.
-
+    # Reusable helper function. Reduces redundant code of 30+ lines for each geometry type. Easier to maintain and update. Creates workbook, writes nodes and elements and plots the 3D view. Easier to debug, test and add new shapes.
     def generate_and_export(name, nodes, elements):
+        # Puts the created Excel files into the Output folder and creates this folder if it does not exist. Prevents file clutter and makes .exe packaging predictable.
         output_dir = os.path.join(os.getcwd(), "Output")
-        os.makedirs(output_dir, exist_ok=True)  # Create folder if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)  # Create Output folder if it doesn't exist
 
         filename = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
         filepath = os.path.join(output_dir, filename)
@@ -174,7 +177,7 @@ def run():
         nodes, elements = dome(H, Re, Ne, N)   # Call the geometry function once and unpack both arrays efficiently.
         generate_and_export("Parabola", nodes, elements)
     
-    # Now we can add more shape types easily:
+    # Now we can easily add more shape types:
     #   if var_ellipse.get():
     #       nodes, elements = ellipse(H, Re, Ne, N)
     #       generate_ and_export("Ellipse", nodes, elements)
