@@ -40,6 +40,7 @@ Install them with:
 
 ```bash
 pip install numpy matplotlib xlsxwriter Pillow
+```
 
 ## 🚀 How to Run
 
