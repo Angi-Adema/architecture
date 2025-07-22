@@ -11,3 +11,11 @@
 
 # Just in case .html sneaks in
 *.html linguist-documentation
+
+*.tex linguist-documentation
+*.bib linguist-documentation
+*.cls linguist-documentation
+*.sty linguist-documentation
+*.pdf linguist-generated
+
+*.py linguist-language=Python
