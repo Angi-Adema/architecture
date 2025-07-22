@@ -1,3 +1,18 @@
+# Ignore LaTeX as primary language
+*.tex linguist-documentation
+*.bib linguist-documentation
+*.cls linguist-documentation
+*.sty linguist-documentation
+*.pdf linguist-generated
+*.aux linguist-generated
+*.log linguist-generated
+*.bbl linguist-generated
+*.toc linguist-generated
+*.out linguist-generated
+
+# Force Python as main language
+*.py linguist-language=Python
+
 # This file is used to define attributes for files in the repository.
 # It helps in determining how files should be treated by Git and other tools.
 
@@ -12,10 +27,10 @@
 # Just in case .html sneaks in
 #*.html linguist-documentation
 
-*.tex linguist-documentation
-*.bib linguist-documentation
-*.cls linguist-documentation
-*.sty linguist-documentation
-*.pdf linguist-generated
+# *.tex linguist-documentation
+# *.bib linguist-documentation
+# *.cls linguist-documentation
+# *.sty linguist-documentation
+# *.pdf linguist-generated
 
-*.py linguist-language=Python
+# *.py linguist-language=Python
