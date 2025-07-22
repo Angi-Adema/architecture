@@ -1,4 +1,4 @@
-#This file is used to define attributes for files in the repository.
+# This file is used to define attributes for files in the repository.
 # It helps in determining how files should be treated by Git and other tools.
 
 # Ignore these from language stats
