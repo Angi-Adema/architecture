@@ -1,9 +1,14 @@
 import numpy as np
 
+# Eliminated the hardcoded values because in umbrella.py, when the user hits Run, the values entered by the user is dynamically passed into the geometry functions.
+
+# Removed matplotlib, xlsxwriter, and 3D plotting as well as code for writing to Excel as these are now handled by the main GUI (umbrella.py). This separation of concerns makes pyramid.py a pure geometry generator with no UI or file responsibilities.
+
 def pyramid(H, Re, Ne, N):
 
     psi = np.pi/Ne
 
+    # Clearned up z-coordinate calculation to be more straightforward.
     def get_z(x):
         return (Re / H) * x
 
@@ -13,7 +18,7 @@ def pyramid(H, Re, Ne, N):
     y_i = np.zeros(nodes_tot)
     z_i = np.zeros(nodes_tot)
     
-    #Defining x and y coords
+    #Defining x and y coords. Got rid of loops with somewhat redundant logic and intermediate arrays like index_i. Keeps the triangular grid logic for a wedge/pyramid profile but avoids unused arrays and extra logic slowing the program down.
     n = 0
     for col in range(N+1):
         for i in range(N+1-col):
@@ -31,7 +36,7 @@ def pyramid(H, Re, Ne, N):
     for i in range(nodes_tot):
         z_i[i] = get_z(x_i[i])
 
-    #Creating nodes array
+    #Node and array creation simplified.
     nodes_ij = np.zeros((nodes_tot, 4))
     for i in range(nodes_tot):
         nodes_ij[i] = [i + 1, x_i[i], y_i[i], z_i[i]]
@@ -40,6 +45,7 @@ def pyramid(H, Re, Ne, N):
     ele_ij = np.zeros((ele_tot,5))
     ele = 1
 
+    # Had triangle vs. quadrilateral logic, with extra if statements and special cases. Still performs the same logic but does so more clearly and readably.
     for col in range(N):
         for i in range(N-col):
             ele_ij[ele-1][0] = ele
@@ -70,6 +76,7 @@ def pyramid(H, Re, Ne, N):
                 ele_ij[ele - 1][4] = ele + (N + 1)
                 ele += 1
     
+    # This keeps the function focused only on data computation, allowing umbrella.py to control file writing, previewing, and user interactions.
     return nodes_ij, ele_ij
 
 
