@@ -14,6 +14,9 @@ from src.dome import dome
 from src.hypar import hypar
 from src.pyramid import pyramid
 
+# Import SAP2000 integration module
+from sap_integration import run_sap2000_analysis
+
 # This block of code supports both the development environment as well as the PyInstaller .exe bundled packaging. This also prevents errors when __file__ doesn't work inside a compiled binary.
 # ---------------- Setup Paths ---------------- #
 if getattr(sys, 'frozen', False):
@@ -137,6 +140,12 @@ def run():
                 ws_elements.write(i, j, row[j])
 
         wb.close()
+
+        # Trigger SAP2000 analysis after Excel is written and provide safeguard against errors or crash.
+        try:
+            run_sap2000_analysis(filepath)
+        except Exception as e:
+            messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
 
     # def generate_and_export(name, nodes, elements):
     #     fig = plt.figure()
