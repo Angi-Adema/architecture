@@ -40,13 +40,44 @@ except Exception:
 
 
 def _start_sap2000_v20(visible=True):
-    """Start SAP2000 v20 using correct ProgIDs and return (sap_obj, model)."""
-    helper = comtypes.client.CreateObject("SAP2000v1.Helper")
-    if s2k:
-        helper = helper.QueryInterface(s2k.cHelper)
-    sap = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
-    sap.ApplicationStart()  # launches v20
+    exe_path, tlb_path = _find_sap_paths()
 
+    # Load the type library if available (nice-to-have; not required to run)
+    try:
+        if tlb_path:
+            cc.GetModule(tlb_path)
+            from comtypes.gen import SAP2000v1 as s2k  # noqa: F401
+    except Exception:
+        pass
+
+    # You need the Helper class; if that's not registered, ask the user to run SAP2000 once as Admin
+    try:
+        helper = cc.CreateObject("SAP2000v1.Helper")
+    except Exception as e:
+        raise RuntimeError(
+            "SAP2000 Helper COM class is not registered. "
+            "Open SAP2000 once as Administrator, close it, then try again."
+        ) from e
+
+    # Preferred path: create via ProgID (works when SapObject is registered)
+    try:
+        from comtypes.gen import SAP2000v1 as s2k  # noqa: F401
+        helper = helper.QueryInterface(s2k.cHelper)  # ok even if tlb wasn’t loaded
+    except Exception:
+        pass
+
+    try:
+        sap = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
+    except Exception:
+        # Fallback: create by EXE path (works even if SapObject ProgID is not registered)
+        if not exe_path:
+            raise RuntimeError(
+                "Could not locate SAP2000.exe. Update DIR_CANDIDATES at the top of sap_integration.py."
+            )
+        sap = helper.CreateObject(exe_path)
+
+    # Launch SAP2000 and prep a blank model
+    sap.ApplicationStart()
     try:
         sap.Visible(visible)
     except Exception:
@@ -55,8 +86,12 @@ def _start_sap2000_v20(visible=True):
     model = sap.SapModel
     model.InitializeNewModel()
     model.File.NewBlank()
-    if s2k:
-        model.SetPresentUnits(s2k.eUnits_kN_m_C)  # set your preferred units
+    try:
+        from comtypes.gen import SAP2000v1 as s2k
+        model.SetPresentUnits(s2k.eUnits_kN_m_C)
+    except Exception:
+        pass
+
     return sap, model
 
 
