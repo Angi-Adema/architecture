@@ -9,8 +9,24 @@ import pandas as pd
 import comtypes.client
 
 # ---- Paths for v20 (adjust if you installed elsewhere) ----
-DEFAULT_INSTALL = r"C:\Program Files\Computers and Structures\SAP2000 20"
-DEFAULT_TLB     = os.path.join(DEFAULT_INSTALL, "SAP2000v1.tlb")
+DIR_CANDIDATES = [
+    r"C:\Program Files\SAP2000 20",
+    r"C:\Program Files\Computers and Structures\SAP2000 20",
+]
+
+def _find_sap_paths():
+    exe_path = None
+    tlb_path = None
+    for d in DIR_CANDIDATES:
+        if not os.path.isdir(d):
+            continue
+        p_exe = os.path.join(d, "SAP2000.exe")
+        p_tlb = os.path.join(d, "SAP2000v1.tlb")
+        if os.path.isfile(p_exe) and exe_path is None:
+            exe_path = p_exe
+        if os.path.isfile(p_tlb) and tlb_path is None:
+            tlb_path = p_tlb
+    return exe_path, tlb_path
 
 # Try to load v20 type library (nice to have: enums & signatures)
 try:
