@@ -156,7 +156,8 @@ def _build_model_from_excel(model, nodes_df, elems_df,
         except Exception as e:
             # If points missing or wrong names, this will fail.
             raise RuntimeError(f"Failed to create frame {fname} ({i_pt}->{j_pt}): {e}")
-    
+
+# Automatically restrain the min-Z so analyses don't go unstable. If we want pins instead of full fixity, change the tuple to (1,1,1,0,0,0).
 def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1,1,1,1,1,1)):
     """
     Fix nodes whose Z is at the minimum Z (within tol).
@@ -233,6 +234,7 @@ def run_sap2000_analysis(input_xlsx, visible=True):
     sap, model = _start_sap2000_v20(visible=visible)
     try:
         _build_model_from_excel(model, nodes, elems)
+        _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
         # Save a copy of the model next to the spreadsheet
