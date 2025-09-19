@@ -156,6 +156,19 @@ def _build_model_from_excel(model, nodes_df, elems_df,
         except Exception as e:
             # If points missing or wrong names, this will fail.
             raise RuntimeError(f"Failed to create frame {fname} ({i_pt}->{j_pt}): {e}")
+    
+def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1,1,1,1,1,1)):
+    """
+    Fix nodes whose Z is at the minimum Z (within tol).
+    fix = (UX, UY, UZ, RX, RY, RZ) as 0/1 flags.
+    Example: fixed base (1,1,1,1,1,1), pinned base (1,1,1,0,0,0).
+    Assumes global Z is vertical (SAP2000 default).
+    """
+    zmin = float(nodes_df["Z"].min())
+    base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= tol, "Name"].astype(str).tolist()
+    for n in base:
+        # PointObj.SetRestraint(Name, UX, UY, UZ, RX, RY, RZ)
+        model.PointObj.SetRestraint(n, *fix)
 
 
 def _add_default_self_weight(model, pattern="Dead", mult=1.0):
