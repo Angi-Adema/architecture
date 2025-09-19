@@ -6,7 +6,7 @@
 
 import os
 import pandas as pd
-import comtypes.client
+import comtypes.client as cc
 
 # ---- Paths for v20 (adjust if you installed elsewhere) ----
 DIR_CANDIDATES = [
@@ -14,9 +14,10 @@ DIR_CANDIDATES = [
     r"C:\Program Files\Computers and Structures\SAP2000 20",
 ]
 
+
 def _find_sap_paths():
-    exe_path = None
-    tlb_path = None
+    """Return (exe_path, tlb_path) if found in DIR_CANDIDATES, else (None, None)."""
+    exe_path, tlb_path = None, None
     for d in DIR_CANDIDATES:
         if not os.path.isdir(d):
             continue
@@ -28,21 +29,12 @@ def _find_sap_paths():
             tlb_path = p_tlb
     return exe_path, tlb_path
 
-# Try to load v20 type library (nice to have: enums & signatures)
-try:
-    if os.path.exists(DEFAULT_TLB):
-        comtypes.client.GetModule(DEFAULT_TLB)
-        from comtypes.gen import SAP2000v1 as s2k
-    else:
-        s2k = None
-except Exception:
-    s2k = None
-
 
 def _start_sap2000_v20(visible=True):
+    """Start SAP2000 v20 via COM and return (sap, model)."""
     exe_path, tlb_path = _find_sap_paths()
 
-    # Load the type library if available (nice-to-have; not required to run)
+    # Load the type library if available (optional; enables nice enums/signatures)
     try:
         if tlb_path:
             cc.GetModule(tlb_path)
@@ -50,26 +42,26 @@ def _start_sap2000_v20(visible=True):
     except Exception:
         pass
 
-    # You need the Helper class; if that's not registered, ask the user to run SAP2000 once as Admin
+    # Create the Helper COM object (must be registered)
     try:
         helper = cc.CreateObject("SAP2000v1.Helper")
+        # If TLB was loaded, refine the interface (optional)
+        try:
+            from comtypes.gen import SAP2000v1 as s2k  # noqa: F401
+            helper = helper.QueryInterface(s2k.cHelper)
+        except Exception:
+            pass
     except Exception as e:
         raise RuntimeError(
             "SAP2000 Helper COM class is not registered. "
-            "Open SAP2000 once as Administrator, close it, then try again."
+            "Run SAP2000 v20 once as Administrator or re-register with /regserver."
         ) from e
 
-    # Preferred path: create via ProgID (works when SapObject is registered)
-    try:
-        from comtypes.gen import SAP2000v1 as s2k  # noqa: F401
-        helper = helper.QueryInterface(s2k.cHelper)  # ok even if tlb wasn’t loaded
-    except Exception:
-        pass
-
+    # Preferred path: create via ProgID (when SapObject is registered)
     try:
         sap = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
     except Exception:
-        # Fallback: create by EXE path (works even if SapObject ProgID is not registered)
+        # Fallback: create by EXE path (requires Helper to be registered)
         if not exe_path:
             raise RuntimeError(
                 "Could not locate SAP2000.exe. Update DIR_CANDIDATES at the top of sap_integration.py."
@@ -102,7 +94,7 @@ def _read_nodes_sheet(xlsx_path):
       col 3 = X
       col 4 = Y
       col 6 = Z
-    We'll map gracefully even if only 0..3 exist (old format).
+    Fallback to compact 4-col layout [Name, X, Y, Z] if needed.
     """
     df = pd.read_excel(xlsx_path, sheet_name="Nodes", header=None)
     # Default mapping
@@ -122,8 +114,7 @@ def _read_nodes_sheet(xlsx_path):
 
 def _read_elements_sheet(xlsx_path):
     """
-    umbrella.py writes 'Elements' without headers, first five columns used.
-    We will interpret as:
+    umbrella.py writes 'Elements' without headers, first five columns used:
       0: FrameName
       1: INode name (must exist in Nodes sheet)
       2: JNode name
@@ -146,10 +137,9 @@ def _read_elements_sheet(xlsx_path):
 def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
                             dims=(0.30, 0.50), mat_type=2):
     """
-    Creates a simple rectangular section if not present.
+    Ensure a basic rectangular frame section/material exists.
     mat_type: 1=Steel, 2=Concrete, ...
     """
-    # Ensure material exists
     try:
         model.PropMaterial.SetMaterial(material, mat_type)
     except Exception:
@@ -159,8 +149,7 @@ def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
     try:
         model.PropFrame.SetRectangle(section, material, b, h)
     except Exception:
-        # If it already exists with different material, that's okay
-        pass
+        pass  # ok if already exists
 
 
 def _build_model_from_excel(model, nodes_df, elems_df,
@@ -205,11 +194,10 @@ def _build_model_from_excel(model, nodes_df, elems_df,
             # returns (ret, new_frame_name)
             model.FrameObj.AddByPoint(i_pt, j_pt, sec, fname, "Global")
         except Exception as e:
-            # If points missing or wrong names, this will fail.
             raise RuntimeError(f"Failed to create frame {fname} ({i_pt}->{j_pt}): {e}")
 
-# Automatically restrain the min-Z so analyses don't go unstable. If we want pins instead of full fixity, change the tuple to (1,1,1,0,0,0).
-def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1,1,1,1,1,1)):
+
+def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
     """
     Fix nodes whose Z is at the minimum Z (within tol).
     fix = (UX, UY, UZ, RX, RY, RZ) as 0/1 flags.
@@ -219,7 +207,6 @@ def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1,1,1,1,1,1)):
     zmin = float(nodes_df["Z"].min())
     base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= tol, "Name"].astype(str).tolist()
     for n in base:
-        # PointObj.SetRestraint(Name, UX, UY, UZ, RX, RY, RZ)
         model.PointObj.SetRestraint(n, *fix)
 
 
@@ -232,8 +219,7 @@ def _add_default_self_weight(model, pattern="Dead", mult=1.0):
 
 
 def _run_analysis(model):
-    ret = model.Analyze.RunAnalysis()
-    return ret
+    return model.Analyze.RunAnalysis()
 
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
@@ -300,9 +286,9 @@ def run_sap2000_analysis(input_xlsx, visible=True):
         _run_analysis(model)
 
         # Collect results (Dead case by default)
-        node_names  = nodes["Name"].astype(str).tolist()
+        node_names = nodes["Name"].astype(str).tolist()
         frame_names = elems["Frame"].astype(str).tolist()
-        disp_df  = _collect_joint_displacements(model, node_names, "Dead")
+        disp_df = _collect_joint_displacements(model, node_names, "Dead")
         force_df = _collect_frame_end_forces(model, frame_names, "Dead")
 
         # Write results to a sibling file
