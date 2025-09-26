@@ -1,6 +1,6 @@
 # SAP2000 v20 integration used by umbrella.py
 # - Reads umbrella.xlsx structure (Nodes, Elements)
-# - Builds model in SAP2000 v20
+# - Builds model in SAP2000
 # - Runs analysis (Dead self-weight)
 # - Exports results to <input>_results.xlsx
 
@@ -8,7 +8,7 @@ import os
 import pandas as pd
 import comtypes.client as cc
 
-# ---- Paths for v20 (adjust if you installed elsewhere) ----
+# ---- Paths for v20 (adjust if installed elsewhere) ----
 DIR_CANDIDATES = [
     r"C:\Program Files\SAP2000 20",
     r"C:\Program Files\Computers and Structures\SAP2000 20",
@@ -31,45 +31,56 @@ def _find_sap_paths():
 
 
 def _start_sap2000_v20(visible=True):
-    """Start SAP2000 v20 via COM and return (sap, model)."""
+    """Start/attach to SAP2000 and return (sap, model). No Helper class required."""
     exe_path, tlb_path = _find_sap_paths()
 
-    # Load the type library if available (optional; enables nice enums/signatures)
+    # Optional: load type library for enums if available
     try:
         if tlb_path:
             cc.GetModule(tlb_path)
             from comtypes.gen import SAP2000v1 as s2k  # noqa: F401
     except Exception:
+        s2k = None  # not critical
+
+    sap = None
+
+    # 1) Preferred: create directly via SapObject ProgID
+    try:
+        sap = cc.CreateObject("CSI.SAP2000.API.SapObject")
+    except Exception:
+        # 2) Fallback: attach to a running instance
+        try:
+            sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
+        except Exception:
+            # 3) Last resort: launch by EXE path, then attach with retries
+            if not exe_path:
+                raise RuntimeError("Could not locate SAP2000.exe. Update DIR_CANDIDATES.")
+            import time
+            os.startfile(exe_path)
+            # retry up to ~20s for ROT registration
+            for _ in range(20):
+                time.sleep(1)
+                try:
+                    sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
+                    break
+                except Exception:
+                    continue
+            if sap is None:
+                raise RuntimeError("SAP2000 did not register in time after launch.")
+
+    # Start (safe even if already running)
+    try:
+        sap.ApplicationStart()
+    except Exception:
+        pass  # already started/connected
+
+    # Ensure we’re the active controller
+    try:
+        sap.SetAsActiveObject()
+    except Exception:
         pass
 
-    # Create the Helper COM object (must be registered)
-    try:
-        helper = cc.CreateObject("SAP2000v1.Helper")
-        # If TLB was loaded, refine the interface (optional)
-        try:
-            from comtypes.gen import SAP2000v1 as s2k  # noqa: F401
-            helper = helper.QueryInterface(s2k.cHelper)
-        except Exception:
-            pass
-    except Exception as e:
-        raise RuntimeError(
-            "SAP2000 Helper COM class is not registered. "
-            "Run SAP2000 v20 once as Administrator or re-register with /regserver."
-        ) from e
-
-    # Preferred path: create via ProgID (when SapObject is registered)
-    try:
-        sap = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
-    except Exception:
-        # Fallback: create by EXE path (requires Helper to be registered)
-        if not exe_path:
-            raise RuntimeError(
-                "Could not locate SAP2000.exe. Update DIR_CANDIDATES at the top of sap_integration.py."
-            )
-        sap = helper.CreateObject(exe_path)
-
-    # Launch SAP2000 and prep a blank model
-    sap.ApplicationStart()
+    # Show window if requested
     try:
         sap.Visible(visible)
     except Exception:
@@ -78,8 +89,10 @@ def _start_sap2000_v20(visible=True):
     model = sap.SapModel
     model.InitializeNewModel()
     model.File.NewBlank()
+
+    # Optional: set units if TLB loaded
     try:
-        from comtypes.gen import SAP2000v1 as s2k
+        from comtypes.gen import SAP2000v1 as s2k  # re-import if available
         model.SetPresentUnits(s2k.eUnits_kN_m_C)
     except Exception:
         pass
@@ -90,61 +103,41 @@ def _start_sap2000_v20(visible=True):
 def _read_nodes_sheet(xlsx_path):
     """
     umbrella.py writes 'Nodes' without headers:
-      col 0 = Name
-      col 3 = X
-      col 4 = Y
-      col 6 = Z
+      col 0 = Name, col 3 = X, col 4 = Y, col 6 = Z
     Fallback to compact 4-col layout [Name, X, Y, Z] if needed.
     """
     df = pd.read_excel(xlsx_path, sheet_name="Nodes", header=None)
-    # Default mapping
     name_col, x_col, y_col, z_col = 0, 3, 4, 6
-    # Fallback for a compact 4-column layout
     if df.shape[1] <= 4:
         name_col, x_col, y_col, z_col = 0, 1, 2, 3
-
-    out = pd.DataFrame({
+    return pd.DataFrame({
         "Name": df.iloc[:, name_col].astype(str),
         "X":    df.iloc[:, x_col].astype(float),
         "Y":    df.iloc[:, y_col].astype(float),
         "Z":    df.iloc[:, z_col].astype(float),
     })
-    return out
 
 
 def _read_elements_sheet(xlsx_path):
     """
-    umbrella.py writes 'Elements' without headers, first five columns used:
-      0: FrameName
-      1: INode name (must exist in Nodes sheet)
-      2: JNode name
-      3: Section name (optional -> default if missing)
-      4: Material (optional -> default if missing)
+    'Elements' without headers, first 5 columns:
+      0 Frame, 1 I, 2 J, 3 Section (opt), 4 Material (opt)
     """
     df = pd.read_excel(xlsx_path, sheet_name="Elements", header=None)
-    # pad columns if fewer than 5 exist
     for c in range(df.shape[1], 5):
         df[c] = None
-    return df.rename(columns={
-        0: "Frame",
-        1: "I",
-        2: "J",
-        3: "Section",
-        4: "Material"
-    })[["Frame", "I", "J", "Section", "Material"]]
+    return df.rename(columns={0: "Frame", 1: "I", 2: "J", 3: "Section", 4: "Material"})[
+        ["Frame", "I", "J", "Section", "Material"]
+    ]
 
 
 def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
                             dims=(0.30, 0.50), mat_type=2):
-    """
-    Ensure a basic rectangular frame section/material exists.
-    mat_type: 1=Steel, 2=Concrete, ...
-    """
+    """Ensure a simple rectangular frame section/material exists (mat_type: 1=Steel, 2=Concrete)."""
     try:
         model.PropMaterial.SetMaterial(material, mat_type)
     except Exception:
         pass
-
     b, h = dims
     try:
         model.PropFrame.SetRectangle(section, material, b, h)
@@ -154,34 +147,29 @@ def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
 
 def _build_model_from_excel(model, nodes_df, elems_df,
                             default_section=("RECT_300x500", "CONC40", (0.30, 0.50))):
-    """Create points and frames using names from the spreadsheets."""
+    """Create points and frames using spreadsheet names."""
     sec_name, mat_name, dims = default_section
-
-    # Make sure there is *some* section & material available
     _ensure_default_section(model, sec_name, mat_name, dims)
 
-    # Add points
+    # Points
     for _, r in nodes_df.iterrows():
         name, x, y, z = r["Name"], r["X"], r["Y"], r["Z"]
         try:
-            # returns (ret, new_name)
             model.PointObj.AddCartesian(x, y, z, str(name))
         except Exception:
-            # likely duplicate names; ignore and continue
-            pass
+            pass  # likely duplicate
 
-    # Add frames
+    # Frames
     for _, r in elems_df.iterrows():
         fname = str(r["Frame"])
-        i_pt  = str(r["I"])
-        j_pt  = str(r["J"])
-        sec   = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
-        mat   = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
+        i_pt = str(r["I"])
+        j_pt = str(r["J"])
+        sec = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
+        mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
 
-        # If a custom material provided, ensure it exists; then ensure section
         if pd.notna(r["Material"]):
             try:
-                model.PropMaterial.SetMaterial(mat, 2)  # assume concrete
+                model.PropMaterial.SetMaterial(mat, 2)
             except Exception:
                 pass
         try:
@@ -189,9 +177,7 @@ def _build_model_from_excel(model, nodes_df, elems_df,
         except Exception:
             pass
 
-        # Create by named points
         try:
-            # returns (ret, new_frame_name)
             model.FrameObj.AddByPoint(i_pt, j_pt, sec, fname, "Global")
         except Exception as e:
             raise RuntimeError(f"Failed to create frame {fname} ({i_pt}->{j_pt}): {e}")
@@ -199,10 +185,8 @@ def _build_model_from_excel(model, nodes_df, elems_df,
 
 def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
     """
-    Fix nodes whose Z is at the minimum Z (within tol).
-    fix = (UX, UY, UZ, RX, RY, RZ) as 0/1 flags.
-    Example: fixed base (1,1,1,1,1,1), pinned base (1,1,1,0,0,0).
-    Assumes global Z is vertical (SAP2000 default).
+    Fix nodes at the minimum Z (within tol).
+    fix=(UX, UY, UZ, RX, RY, RZ); e.g., fixed base (1,1,1,1,1,1) or pinned (1,1,1,0,0,0).
     """
     zmin = float(nodes_df["Z"].min())
     base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= tol, "Name"].astype(str).tolist()
@@ -211,7 +195,7 @@ def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
 
 
 def _add_default_self_weight(model, pattern="Dead", mult=1.0):
-    """Create a Dead load pattern and set self-weight multiplier so you get non-zero results."""
+    """Create a Dead load pattern with self-weight multiplier."""
     try:
         model.LoadPatterns.Add(pattern, 1, mult)  # 1 = Dead
     except Exception:
@@ -225,9 +209,7 @@ def _run_analysis(model):
 def _collect_joint_displacements(model, node_names, case="Dead"):
     rows = []
     for n in node_names:
-        # v20 signature returns arrays
-        ret, Obj, Elm, StepType, StepNum, U1, U2, U3, R1, R2, R3 = \
-            model.Results.JointDispl(str(n), 0, case)
+        ret, Obj, Elm, StepType, StepNum, U1, U2, U3, R1, R2, R3 = model.Results.JointDispl(str(n), 0, case)
         for i in range(len(Obj)):
             rows.append({
                 "Node": Obj[i], "Case": case,
@@ -240,41 +222,36 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
 def _collect_frame_end_forces(model, frame_names, case="Dead"):
     rows = []
     for f in frame_names:
-        # StationType=1 => ends only
-        ret, Obj, Elm, StepNum, P, V2, V3, T, M2, M3 = \
-            model.Results.FrameForce(str(f), 1, case)
+        ret, Obj, Elm, StepNum, P, V2, V3, T, M2, M3 = model.Results.FrameForce(str(f), 1, case)
         for i in range(len(Obj)):
             end = "I" if (i % 2 == 0) else "J"
             rows.append({
                 "Frame": Obj[i], "Case": case, "End": end,
-                "P":  P[i], "V2": V2[i], "V3": V3[i],
-                "T":  T[i], "M2": M2[i], "M3": M3[i],
+                "P": P[i], "V2": V2[i], "V3": V3[i],
+                "T": T[i], "M2": M2[i], "M3": M3[i],
             })
     return pd.DataFrame(rows)
 
 
 def run_sap2000_analysis(input_xlsx, visible=True):
     """
-    Entry point called by umbrella.py.
-    Builds & analyzes a model from 'Nodes' and 'Elements' sheets, then writes results to:
+    Build & analyze a model from 'Nodes' and 'Elements' sheets, then write results to:
       <input_basename>_results.xlsx
-    Returns dict describing outputs.
+    Returns a dict describing outputs.
     """
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
 
-    # Read your umbrella-generated workbook
     nodes = _read_nodes_sheet(input_xlsx)
     elems = _read_elements_sheet(input_xlsx)
 
-    # Start SAP2000 v20 and build
     sap, model = _start_sap2000_v20(visible=visible)
     try:
         _build_model_from_excel(model, nodes, elems)
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
-        # Save a copy of the model next to the spreadsheet
+        # Save model beside spreadsheet
         base, _ = os.path.splitext(input_xlsx)
         sdb_path = base + ".sdb"
         try:
@@ -282,16 +259,14 @@ def run_sap2000_analysis(input_xlsx, visible=True):
         except Exception:
             pass
 
-        # Run analysis
         _run_analysis(model)
 
-        # Collect results (Dead case by default)
+        # Results
         node_names = nodes["Name"].astype(str).tolist()
         frame_names = elems["Frame"].astype(str).tolist()
         disp_df = _collect_joint_displacements(model, node_names, "Dead")
         force_df = _collect_frame_end_forces(model, frame_names, "Dead")
 
-        # Write results to a sibling file
         results_xlsx = base + "_results.xlsx"
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
             nodes.to_excel(xlw, sheet_name="Nodes", index=False)
