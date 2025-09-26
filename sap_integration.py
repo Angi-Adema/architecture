@@ -16,17 +16,25 @@ DIR_CANDIDATES = [
 
 
 def _find_sap_paths():
-    """Return (exe_path, tlb_path) if found in DIR_CANDIDATES, else (None, None)."""
     exe_path, tlb_path = None, None
     for d in DIR_CANDIDATES:
         if not os.path.isdir(d):
             continue
         p_exe = os.path.join(d, "SAP2000.exe")
-        p_tlb = os.path.join(d, "SAP2000v1.tlb")
+
+        # Look for versioned TLBs
+        tlb_candidates = [
+            os.path.join(d, "SAP2000v20.tlb"),
+            os.path.join(d, "SAP2000v19.tlb"),
+            os.path.join(d, "SAP2000v1.tlb"),
+        ]
+
         if os.path.isfile(p_exe) and exe_path is None:
             exe_path = p_exe
-        if os.path.isfile(p_tlb) and tlb_path is None:
-            tlb_path = p_tlb
+        for p_tlb in tlb_candidates:
+            if os.path.isfile(p_tlb) and tlb_path is None:
+                tlb_path = p_tlb
+                break
     return exe_path, tlb_path
 
 
