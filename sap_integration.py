@@ -4,6 +4,7 @@
 # - Runs analysis (Dead self-weight)
 # - Exports results to <input>_results.xlsx
 
+import importlib
 import os
 import pandas as pd
 import comtypes.client as cc
@@ -39,56 +40,51 @@ def _find_sap_paths():
 
 
 def _start_sap2000_v20(visible=True):
-    """Start/attach to SAP2000 and return (sap, model). No Helper class required."""
     exe_path, tlb_path = _find_sap_paths()
 
-    # Optional: load type library for enums if available
+    # Optional: load type library and import its generated module as s2k
+    s2k = None
     try:
         if tlb_path:
             cc.GetModule(tlb_path)
-            from comtypes.gen import SAP2000v1 as s2k  # noqa: F401
+            # e.g., "SAP2000v20.tlb" -> module "SAP2000v20"
+            module_name = os.path.splitext(os.path.basename(tlb_path))[0]
+            s2k = importlib.import_module(f"comtypes.gen.{module_name}")
     except Exception:
         s2k = None  # not critical
 
     sap = None
-
-    # 1) Preferred: create directly via SapObject ProgID
+    # Preferred: direct SapObject ProgID
     try:
         sap = cc.CreateObject("CSI.SAP2000.API.SapObject")
     except Exception:
-        # 2) Fallback: attach to a running instance
+        # Attach or last-resort launch then attach
         try:
             sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
         except Exception:
-            # 3) Last resort: launch by EXE path, then attach with retries
             if not exe_path:
                 raise RuntimeError("Could not locate SAP2000.exe. Update DIR_CANDIDATES.")
             import time
             os.startfile(exe_path)
-            # retry up to ~20s for ROT registration
             for _ in range(20):
                 time.sleep(1)
                 try:
                     sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
                     break
                 except Exception:
-                    continue
+                    pass
             if sap is None:
                 raise RuntimeError("SAP2000 did not register in time after launch.")
 
-    # Start (safe even if already running)
+    # Start (safe if already running)
     try:
         sap.ApplicationStart()
     except Exception:
-        pass  # already started/connected
-
-    # Ensure we’re the active controller
+        pass
     try:
         sap.SetAsActiveObject()
     except Exception:
         pass
-
-    # Show window if requested
     try:
         sap.Visible(visible)
     except Exception:
@@ -98,10 +94,10 @@ def _start_sap2000_v20(visible=True):
     model.InitializeNewModel()
     model.File.NewBlank()
 
-    # Optional: set units if TLB loaded
+    # Use enums if available
     try:
-        from comtypes.gen import SAP2000v1 as s2k  # re-import if available
-        model.SetPresentUnits(s2k.eUnits_kN_m_C)
+        if s2k:
+            model.SetPresentUnits(s2k.eUnits_kN_m_C)
     except Exception:
         pass
 
