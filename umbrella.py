@@ -14,6 +14,9 @@ from src.dome import dome
 from src.hypar import hypar
 from src.pyramid import pyramid
 
+import os
+os.environ.setdefault("LM_LICENSE_FILE", "27000@pceasapp965.ucdenver.pvt")
+
 # SAP2000 integration
 from sap_integration import run_sap2000_analysis
 
@@ -171,6 +174,74 @@ def run():
 
 # Run button
 Button(root, text='Run', width=18, height=2, command=run).grid(row=6, column=2, rowspan=3, padx=(12, 0))
+
+# Quit button
+Button(root, text='Quit', width=18, height=2, command=quit_app)\
+    .grid(row=9, column=2, pady=(8, 0), padx=(12, 0))
+
+
+def quit_app():
+    """Cleanly close SAP2000 if it's running, then exit the GUI."""
+    try:
+        # Optional: ask the user first
+        if not messagebox.askokcancel("Quit", "Close SAP2000 and exit Umbrella?"):
+            return
+    except Exception:
+        # messagebox may not be initialized in some edge cases—proceed anyway
+        pass
+
+    closed = False
+
+    # Try the API paths that DO NOT launch a new instance
+    try:
+        import time, subprocess
+        import comtypes.client as cc
+
+        # 1) Attach via ROT (running object table)
+        try:
+            sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
+            try:
+                sap.ApplicationExit(True)  # True = no save prompt
+                time.sleep(1.0)
+                closed = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # 2) Attach via Helper.GetObject (sometimes works when ROT doesn’t)
+        if not closed:
+            try:
+                helper = cc.CreateObject("SAP2000v1.Helper")
+                sap = helper.GetObject("CSI.SAP2000.API.SapObject")
+                sap.ApplicationExit(True)
+                time.sleep(1.0)
+                closed = True
+            except Exception:
+                pass
+
+        # 3) Last resort: force close if API attach failed
+        if not closed:
+            try:
+                # gentle try first (no /F)
+                subprocess.run(["taskkill", "/IM", "SAP2000.exe", "/T"], capture_output=True)
+                # ensure it’s gone
+                subprocess.run(["taskkill", "/IM", "SAP2000.exe", "/T", "/F"], capture_output=True)
+            except Exception:
+                pass
+
+    except Exception:
+        # If comtypes or subprocess import fails, still proceed to close GUI
+        pass
+
+    # Finally, close the GUI
+    try:
+        master_window.destroy()
+    except Exception:
+        # emergency exit if Tk is unhappy
+        import os
+        os._exit(0)
+
 
 # ---------------- Launch ---------------- #
 root.mainloop()

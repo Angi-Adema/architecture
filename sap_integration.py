@@ -329,13 +329,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
             "disp_rows": 0 if disp_df.empty else len(disp_df),
             "force_rows": 0 if force_df.empty else len(force_df),
         }
-    finally:
-        # Auto-close if running headless, or when explicitly requested
-        if (not visible) or close_after:
-            try:
-                sap.ApplicationExit(True)  # clean close, no save prompt
-            except Exception:
-                pass
+    finally:  # <-- align with the try:
+        try:
+            if close_after or not visible:
+                sap.ApplicationExit(True)  # True => don't prompt to save
+        except Exception:
+            pass
+
+
 
 
 
