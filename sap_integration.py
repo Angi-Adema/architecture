@@ -271,7 +271,7 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
     return pd.DataFrame(rows)
 
 
-def run_sap2000_analysis(input_xlsx, visible=True):
+def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
     """
     Build & analyze a model from 'Nodes' and 'Elements' sheets, then write results to:
       <input_basename>_results.xlsx
@@ -289,7 +289,7 @@ def run_sap2000_analysis(input_xlsx, visible=True):
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
-        # Save model beside spreadsheet
+        # Save model beside spreadsheet (e.g., umbrella.sdb)
         base, _ = os.path.splitext(input_xlsx)
         sdb_path = base + ".sdb"
         try:
@@ -305,7 +305,6 @@ def run_sap2000_analysis(input_xlsx, visible=True):
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
         except Exception:
             pass
-
 
         # Results
         node_names = nodes["Name"].astype(str).tolist()
@@ -331,10 +330,10 @@ def run_sap2000_analysis(input_xlsx, visible=True):
             "force_rows": 0 if force_df.empty else len(force_df),
         }
     finally:
-        # keep SAP open if visible=True so you can inspect
-        if not visible:
+        # Auto-close if running headless, or when explicitly requested
+        if (not visible) or close_after:
             try:
-                sap.ApplicationExit(True)  # True => no save prompt
+                sap.ApplicationExit(True)  # clean close, no save prompt
             except Exception:
                 pass
 
