@@ -85,10 +85,13 @@ def _start_sap2000_v20(visible=True):
         sap.SetAsActiveObject()
     except Exception:
         pass
-    try:
-        sap.Visible(visible)
-    except Exception:
-        pass
+
+    # SAP2000 v20: Visible() takes no arguments
+    if visible:
+        try:
+            sap.Visible()
+        except Exception:
+            pass
 
     model = sap.SapModel
     model.InitializeNewModel()
