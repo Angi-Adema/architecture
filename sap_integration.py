@@ -215,11 +215,26 @@ def _run_analysis(model):
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
     rows = []
+    # Defensive: select the case
+    try:
+        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+        model.Results.Setup.SetCaseSelectedForOutput(case)
+    except Exception:
+        pass
+
     for n in node_names:
-        ret, Obj, Elm, StepType, StepNum, U1, U2, U3, R1, R2, R3 = model.Results.JointDispl(str(n), 0, case)
-        for i in range(len(Obj)):
+        # v20 signature:
+        # (ret, NumberResults, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3)
+        ret, nres, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3 = \
+            model.Results.JointDispl(str(n), 0, case)
+        if not nres:
+            continue
+        for i in range(nres):
             rows.append({
-                "Node": Obj[i], "Case": case,
+                "Node": Obj[i],
+                "Case": LoadCase[i],
+                "StepType": StepType[i],
+                "StepNum": StepNum[i],
                 "UX": U1[i], "UY": U2[i], "UZ": U3[i],
                 "RX": R1[i], "RY": R2[i], "RZ": R3[i],
             })
@@ -228,12 +243,28 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
 
 def _collect_frame_end_forces(model, frame_names, case="Dead"):
     rows = []
+    # Defensive: select the case
+    try:
+        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+        model.Results.Setup.SetCaseSelectedForOutput(case)
+    except Exception:
+        pass
+
     for f in frame_names:
-        ret, Obj, Elm, StepNum, P, V2, V3, T, M2, M3 = model.Results.FrameForce(str(f), 1, case)
-        for i in range(len(Obj)):
+        # v20 signature:
+        # (ret, NumberResults, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3)
+        ret, nres, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3 = \
+            model.Results.FrameForce(str(f), 1, case)  # 1 = ends only
+        if not nres:
+            continue
+        for i in range(nres):
             end = "I" if (i % 2 == 0) else "J"
             rows.append({
-                "Frame": Obj[i], "Case": case, "End": end,
+                "Frame": Obj[i],
+                "Case": LoadCase[i],
+                "StepType": StepType[i],
+                "StepNum": StepNum[i],
+                "End": end,
                 "P": P[i], "V2": V2[i], "V3": V3[i],
                 "T": T[i], "M2": M2[i], "M3": M3[i],
             })
@@ -267,6 +298,14 @@ def run_sap2000_analysis(input_xlsx, visible=True):
             pass
 
         _run_analysis(model)
+
+        # Ensure only the desired case is selected for output
+        try:
+            model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+            model.Results.Setup.SetCaseSelectedForOutput("Dead")
+        except Exception:
+            pass
+
 
         # Results
         node_names = nodes["Name"].astype(str).tolist()
