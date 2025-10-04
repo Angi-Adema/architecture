@@ -225,12 +225,18 @@ def _build_model_from_excel(model, nodes_df, elems_df,
 def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
     """
     Fix nodes at the minimum Z (within tol).
-    fix=(UX, UY, UZ, RX, RY, RZ); e.g., fixed base (1,1,1,1,1,1) or pinned (1,1,1,0,0,0).
+    fix: tuple/list of 6 flags (UX, UY, UZ, RX, RY, RZ).
+        e.g. fixed: (1,1,1,1,1,1), pinned: (1,1,1,0,0,0)
     """
     zmin = float(nodes_df["Z"].min())
     base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= tol, "Name"].astype(str).tolist()
+
+    # Ensure we pass a single SAFEARRAY/sequence, not six separate args
+    restr = list(fix)  # comtypes will marshal this to SAFEARRAY(VARIANT_BOOL/INT)
     for n in base:
-        model.PointObj.SetRestraint(n, *fix)
+        # v20 wants: SetRestraint(Name, Restraint[6])
+        model.PointObj.SetRestraint(n, restr)
+
 
 
 def _add_default_self_weight(model, pattern="Dead", mult=1.0):
