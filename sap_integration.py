@@ -15,6 +15,27 @@ DIR_CANDIDATES = [
     r"C:\Program Files\Computers and Structures\SAP2000 20",
 ]
 
+def _as_seq(x, n):
+    """Coerce COM return 'x' to a sequence of length n.
+    Handles singletons (scalar) and SAFEARRAYs that don't support len() cleanly.
+    """
+    if n is None:
+        n = 0
+    try:
+        # Already a list/tuple-like with length?
+        _ = len(x)  # may raise if x is scalar
+        return list(x)
+    except Exception:
+        # Not iterable -> replicate scalar n times
+        return [x] * int(n)
+
+def _select_case(model, case):
+    try:
+        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+        model.Results.Setup.SetCaseSelectedForOutput(case)
+    except Exception:
+        pass
+
 
 def _find_sap_paths():
     exe_path, tlb_path = None, None
@@ -215,21 +236,31 @@ def _run_analysis(model):
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
     rows = []
-    # Defensive: select the case
-    try:
-        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-        model.Results.Setup.SetCaseSelectedForOutput(case)
-    except Exception:
-        pass
+    _select_case(model, case)
 
-    for n in node_names:
+    for nname in node_names:
         # v20 signature:
         # (ret, NumberResults, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3)
-        ret, nres, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3 = \
-            model.Results.JointDispl(str(n), 0, case)
-        if not nres:
+        try:
+            ret, nres, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3 = \
+                model.Results.JointDispl(str(nname), 0, case)
+        except Exception as e:
+            # skip bad node gracefully
             continue
-        for i in range(nres):
+
+        n = int(nres or 0)
+        if n == 0:
+            continue
+
+        # Coerce possible scalars into sequences of length n
+        Obj      = _as_seq(Obj, n)
+        LoadCase = _as_seq(LoadCase, n)
+        StepType = _as_seq(StepType, n)
+        StepNum  = _as_seq(StepNum, n)
+        U1 = _as_seq(U1, n); U2 = _as_seq(U2, n); U3 = _as_seq(U3, n)
+        R1 = _as_seq(R1, n); R2 = _as_seq(R2, n); R3 = _as_seq(R3, n)
+
+        for i in range(n):
             rows.append({
                 "Node": Obj[i],
                 "Case": LoadCase[i],
@@ -243,21 +274,31 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
 
 def _collect_frame_end_forces(model, frame_names, case="Dead"):
     rows = []
-    # Defensive: select the case
-    try:
-        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-        model.Results.Setup.SetCaseSelectedForOutput(case)
-    except Exception:
-        pass
+    _select_case(model, case)
 
-    for f in frame_names:
+    for fname in frame_names:
         # v20 signature:
         # (ret, NumberResults, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3)
-        ret, nres, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3 = \
-            model.Results.FrameForce(str(f), 1, case)  # 1 = ends only
-        if not nres:
+        try:
+            ret, nres, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3 = \
+                model.Results.FrameForce(str(fname), 1, case)  # 1 = ends only
+        except Exception:
             continue
-        for i in range(nres):
+
+        n = int(nres or 0)
+        if n == 0:
+            continue
+
+        # Normalize to sequences
+        Obj      = _as_seq(Obj, n)
+        LoadCase = _as_seq(LoadCase, n)
+        StepType = _as_seq(StepType, n)
+        StepNum  = _as_seq(StepNum, n)
+        P  = _as_seq(P,  n);  V2 = _as_seq(V2, n); V3 = _as_seq(V3, n)
+        T  = _as_seq(T,  n);  M2 = _as_seq(M2, n); M3 = _as_seq(M3, n)
+
+        for i in range(n):
+            # result order comes I/J alternating for ends-only
             end = "I" if (i % 2 == 0) else "J"
             rows.append({
                 "Frame": Obj[i],
