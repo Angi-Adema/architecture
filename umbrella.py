@@ -14,7 +14,7 @@ from src.dome import dome
 from src.hypar import hypar
 from src.pyramid import pyramid
 
-import os
+# Set license env var BEFORE importing sap_integration
 os.environ.setdefault("LM_LICENSE_FILE", "27000@pceasapp965.ucdenver.pvt")
 
 # SAP2000 integration
@@ -172,13 +172,6 @@ def run():
         nodes, elements = dome(H, Re, Ne, N)
         generate_and_export("Parabola", nodes, elements)
 
-# Run button
-Button(root, text='Run', width=18, height=2, command=run).grid(row=6, column=2, rowspan=3, padx=(12, 0))
-
-# Quit button
-Button(root, text='Quit', width=18, height=2, command=quit_app)\
-    .grid(row=9, column=2, pady=(8, 0), padx=(12, 0))
-
 
 def quit_app():
     """Cleanly close SAP2000 if it's running, then exit the GUI."""
@@ -241,6 +234,13 @@ def quit_app():
         # emergency exit if Tk is unhappy
         import os
         os._exit(0)
+
+# Run button
+Button(root, text='Run', width=18, height=2, command=run).grid(row=6, column=2, rowspan=3, padx=(12, 0))
+
+# Quit button
+Button(root, text='Quit', width=18, height=2, command=quit_app)\
+    .grid(row=9, column=2, pady=(8, 0), padx=(12, 0))
 
 
 # ---------------- Launch ---------------- #
