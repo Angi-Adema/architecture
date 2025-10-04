@@ -157,7 +157,13 @@ def run():
                 f"Frame forces rows: {results['force_rows']}"
             )
         except Exception as e:
+            # Debug
+            import traceback
+            print("\n=== Umbrella caught exception ===\n", flush=True)
+            traceback.print_exc()
             messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
+
+            #messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
 
     # Generate each selected geometry and analyze
     if var_hypar.get():

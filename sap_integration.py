@@ -9,6 +9,17 @@ import os
 import pandas as pd
 import comtypes.client as cc
 
+# --- DEBUG SWITCH ---
+DEBUG = True
+
+def _log(*a):
+    if DEBUG:
+        try:
+            print(*a, flush=True)
+        except Exception:
+            pass
+
+
 # ---- Paths for v20 (adjust if installed elsewhere) ----
 DIR_CANDIDATES = [
     r"C:\Program Files\SAP2000 20",
@@ -248,6 +259,12 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
             # skip bad node gracefully
             continue
 
+        
+        _log(f"[JointDispl] node={nname!r} -> nres={nres} | "
+            f"types: Obj={type(Obj).__name__}, U1={type(U1).__name__}, "
+            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, StepNum={type(StepNum).__name__}")
+
+
         n = int(nres or 0)
         if n == 0:
             continue
@@ -284,6 +301,11 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
                 model.Results.FrameForce(str(fname), 1, case)  # 1 = ends only
         except Exception:
             continue
+
+        # Debug
+        _log(f"[FrameForce] frame={fname!r} -> nres={nres} | "
+            f"types: Obj={type(Obj).__name__}, P={type(P).__name__}, "
+            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, StepNum={type(StepNum).__name__}")
 
         n = int(nres or 0)
         if n == 0:
@@ -347,11 +369,26 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
         except Exception:
             pass
 
+        # Debug
+        _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
+        _log(f"[run] first 5 node names: {nodes['Name'].astype(str).tolist()[:5]}")
+        _log(f"[run] first 5 frame names: {elems['Frame'].astype(str).tolist()[:5]}")
+
+
+
         # Results
         node_names = nodes["Name"].astype(str).tolist()
         frame_names = elems["Frame"].astype(str).tolist()
-        disp_df = _collect_joint_displacements(model, node_names, "Dead")
-        force_df = _collect_frame_end_forces(model, frame_names, "Dead")
+
+        # Debug
+        import traceback
+        try:
+            disp_df = _collect_joint_displacements(model, node_names, "Dead")
+            force_df = _collect_frame_end_forces(model, frame_names, "Dead")
+        except Exception as e:
+            _log("[Error] While collecting results:")
+            _log(traceback.format_exc())
+            raise
 
         results_xlsx = base + "_results.xlsx"
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
