@@ -12,10 +12,11 @@ import comtypes.client as cc
 # --- DEBUG SWITCH ---
 DEBUG = True
 
-def _log(*a):
+def _log(*a, sep=" ", end="\n"):
+    """Lightweight debug logger - only prints when DEBUG is True."""
     if DEBUG:
         try:
-            print(*a, flush=True)
+            print("[DEBUG]", *a, sep=sep, end=end, flush=True)
         except Exception:
             pass
 
