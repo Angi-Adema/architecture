@@ -340,6 +340,229 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
             })
     return pd.DataFrame(rows)
 
+# ---------------- Area & Pattern Automation ---------------- #
+
+def _get_all_area_names(model):
+    """
+    Returns list of all area (shell) object names.
+    API calls (names may vary slightly by version):
+      - model.AreaObj.Count()
+      - model.AreaObj.GetNameList()
+    """
+    try:
+        ret, n_areas = model.AreaObj.Count()
+        if int(n_areas) == 0:
+            return []
+        ret, names = model.AreaObj.GetNameList()
+        try:
+            return list(names)
+        except Exception:
+            return [names]
+    except Exception:
+        try:
+            ret, names = model.AreaObj.GetNameList()
+            try:
+                return list(names)
+            except Exception:
+                return [names]
+        except Exception:
+            return []
+
+
+def _ensure_joint_pattern_exists(model, pattern_name="SOIL_DEPTH"):
+    """
+    Ensures a joint pattern with 'pattern_name' exists.
+    """
+    candidates = [
+        ("PatternDef", "SetJointPattern"),
+        ("EditGeneral", "SetJointPattern"),
+        ("DefineJointPattern", None),
+    ]
+    for obj_name, meth_name in candidates:
+        try:
+            target = getattr(model, obj_name) if obj_name else model
+            method = getattr(target, meth_name) if meth_name else getattr(model, "DefineJointPattern")
+            method(pattern_name)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _set_joint_pattern_value_for_point(model, joint_name, pattern_name, value):
+    """
+    Set joint pattern value at a specific point (joint).
+    """
+    point = model.PointObj
+    method_names = ["SetPatternValue", "SetPattern", "SetPatternValue_1"]
+    for m in method_names:
+        try:
+            getattr(point, m)(str(joint_name), str(pattern_name), float(value))
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _iter_all_point_coords(model):
+    """
+    Yield (name, x, y, z) for all joints in the model.
+    """
+    ret, names = model.PointObj.GetNameList()
+    try:
+        names = list(names)
+    except Exception:
+        names = [names]
+    for nm in names:
+        try:
+            ret, x, y, z = model.PointObj.GetCoordCartesian(nm, "Global")
+        except Exception:
+            ret, x, y, z = model.PointObj.GetCoordCartesian(nm)
+        yield nm, float(x), float(y), float(z)
+
+
+def _assign_area_surface_pressure_by_joint_pattern(
+    model,
+    area_name,
+    load_pattern,
+    joint_pattern,
+    multiplier,
+    coord_sys="Global",
+    replace=True
+):
+    """
+    Assign Area Loads -> Surface Pressure -> By Joint Pattern.
+    Tries SetLoadSurfacePressure first, then SetLoadUniformToPattern as fallback.
+    """
+    area = model.AreaObj
+    try:
+        area.SetLoadSurfacePressure(area_name, load_pattern, "Projected",
+                                    float(multiplier), coord_sys, bool(replace),
+                                    True, joint_pattern)
+        return True
+    except Exception:
+        pass
+    try:
+        area.SetLoadUniformToPattern(area_name, load_pattern, joint_pattern,
+                                     coord_sys, float(multiplier), bool(replace))
+        return True
+    except Exception:
+        pass
+    try:
+        area.SetLoadUniform(area_name, load_pattern, float(multiplier), coord_sys, bool(replace))
+        return False
+    except Exception:
+        return False
+
+
+def sweep_soil_pressure_by_depth(
+    model,
+    depth_min=0.0,
+    depth_max=5.0,
+    depth_step=0.5,
+    gamma_soil_N_per_m3=18000.0,
+    load_pattern_name="SOIL",
+    joint_pattern_name="SOIL_DEPTH",
+    vertical_axis="Z",
+    normalize_pattern=False,
+    results_case_name="SOIL_CASE",
+    replace_area_load_each_step=True,
+    visible=True,
+    close_after=False,
+    results_book_path=None,
+):
+    """
+    Sweep soil pressure by depth (0.5 m steps by default) and collect results.
+    """
+    try:
+        model.LoadPatterns.Add(load_pattern_name, 1, 0.0)  # 1=Dead
+    except Exception:
+        pass
+
+    _ensure_joint_pattern_exists(model, joint_pattern_name)
+
+    area_names = _get_all_area_names(model)
+    if not area_names:
+        raise RuntimeError("No area (shell) objects found. Soil pressure must be assigned to areas.")
+
+    joints = list(_iter_all_point_coords(model))
+    if not joints:
+        raise RuntimeError("No joints found in model to set joint-pattern values.")
+
+    axis_map = {"X": 0, "Y": 1, "Z": 2}
+    if vertical_axis.upper() not in axis_map:
+        raise ValueError("vertical_axis must be one of 'X','Y','Z'")
+    idx = axis_map[vertical_axis.upper()]
+
+    surface_elev = max((xyz[idx] for (_, *xyz) in ((n, x, y, z) for n, x, y, z in joints)))
+
+    results = []
+    d = depth_min
+    try:
+        model.LoadCases.StaticLinear.SetCase(results_case_name)
+        model.LoadCases.StaticLinear.SetLoads(results_case_name, 1, [load_pattern_name], [1.0])
+    except Exception:
+        pass
+
+    while d <= depth_max + 1e-9:
+        for joint_name, x, y, z in joints:
+            elev = (x, y, z)[idx]
+            raw_depth = max(0.0, surface_elev - elev)
+            depth_for_step = min(raw_depth, d)
+            if normalize_pattern:
+                pattern_value = 0.0 if d <= 1e-12 else (depth_for_step / d)
+                multiplier = gamma_soil_N_per_m3 * d  # N/m^2
+            else:
+                pattern_value = depth_for_step                 # m
+                multiplier = gamma_soil_N_per_m3               # N/m^3
+            _set_joint_pattern_value_for_point(model, joint_name, joint_pattern_name, pattern_value)
+
+        for an in area_names:
+            _assign_area_surface_pressure_by_joint_pattern(
+                model,
+                area_name=an,
+                load_pattern=load_pattern_name,
+                joint_pattern=joint_pattern_name,
+                multiplier=multiplier,
+                coord_sys="Global",
+                replace=replace_area_load_each_step
+            )
+
+        _run_analysis(model)
+
+        node_names = [n for (n, _, _, _) in joints]
+        try:
+            disp_df = _collect_joint_displacements(model, node_names, case=results_case_name)
+        except Exception:
+            disp_df = _collect_joint_displacements(model, node_names, case="Dead")
+
+        force_df = pd.DataFrame()
+
+        disp_df.insert(0, "Depth_m", round(d, 3))
+        disp_df.insert(1, "Multiplier", multiplier)
+        if not force_df.empty:
+            force_df.insert(0, "Depth_m", round(d, 3))
+            force_df.insert(1, "Multiplier", multiplier)
+
+        results.append((round(d, 3), disp_df, force_df))
+        d = round(d + depth_step, 10)
+
+    if results_book_path:
+        with pd.ExcelWriter(results_book_path, engine="xlsxwriter") as xlw:
+            for depth_val, disp_df, force_df in results:
+                dtag = f"d{str(depth_val).replace('.', '_')}"
+                if not disp_df.empty:
+                    disp_df.to_excel(xlw, sheet_name=f"Disp_{dtag}", index=False)
+                if not force_df.empty:
+                    force_df.to_excel(xlw, sheet_name=f"Forces_{dtag}", index=False)
+
+    return {
+        "steps": len(results),
+        "depths": [d for d, _, _ in results],
+        "displacements_by_step": [disp for _, disp, _ in results],
+        "forces_by_step": [frc for _, _, frc in results],
+    }
+
 
 def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
     """
