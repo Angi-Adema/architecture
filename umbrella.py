@@ -80,6 +80,14 @@ Checkbutton(root, text='Generate parabolic tympan', font=font_type, variable=var
 var_autoclose = IntVar(value=0)   # 0 = keep SAP open after run; 1 = auto-close
 Checkbutton(root, text='Auto-close SAP2000 after analysis', font=font_type, variable=var_autoclose).grid(sticky=W, row=9, column=0, columnspan=2)
 
+# --- Soil sweep inputs (Section B 1) ) ---
+depth_min_var  = DoubleVar(value=0.0)
+depth_max_var  = DoubleVar(value=4.0)
+depth_step_var = DoubleVar(value=0.5)
+gamma_var      = DoubleVar(value=18000.0)   # N/m^3
+axis_var       = StringVar(value="Z")
+normalize_var  = BooleanVar(value=False)
+
 # ---------------- Load Schematic Image ---------------- #
 img_path = os.path.join(base_path, 'Geometry.png')
 if os.path.exists(img_path):
