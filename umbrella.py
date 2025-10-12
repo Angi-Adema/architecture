@@ -102,6 +102,10 @@ if os.path.exists(img_path):
     except Exception:
         pass
 
+# --- Soil sweep section header ---
+Label(root, text='Soil pressure sweep', font=font_head)\
+    .grid(sticky=W, row=10, column=0, columnspan=2, pady=(6,2))
+
 # --- Soil sweep controls (Section B 2) ) ---
 Label(root, text='Soil Depth Min (m)', font=font_type).grid(sticky=W, row=10, column=0)
 Entry(root, textvariable=depth_min_var, width=10).grid(row=10, column=1)
