@@ -98,9 +98,27 @@ if os.path.exists(img_path):
         schematic = ImageTk.PhotoImage(img_resized)
         img_label = Label(image=schematic)
         img_label.image = schematic  # prevent GC
-        img_label.grid(row=10, column=0, columnspan=3, pady=(8, 0))
+        img_label.grid(row=17, column=0, columnspan=3, pady=(8, 0))
     except Exception:
         pass
+
+# --- Soil sweep controls (Section B 2) ) ---
+Label(root, text='Soil Depth Min (m)', font=font_type).grid(sticky=W, row=10, column=0)
+Entry(root, textvariable=depth_min_var, width=10).grid(row=10, column=1)
+
+Label(root, text='Soil Depth Max (m)', font=font_type).grid(sticky=W, row=11, column=0)
+Entry(root, textvariable=depth_max_var, width=10).grid(row=11, column=1)
+
+Label(root, text='Depth Step (m)', font=font_type).grid(sticky=W, row=12, column=0)
+Entry(root, textvariable=depth_step_var, width=10).grid(row=12, column=1)
+
+Label(root, text='γ Soil (N/m³)', font=font_type).grid(sticky=W, row=13, column=0)
+Entry(root, textvariable=gamma_var, width=10).grid(row=13, column=1)
+
+Label(root, text='Vertical Axis', font=font_type).grid(sticky=W, row=14, column=0)
+OptionMenu(root, axis_var, "X", "Y", "Z").grid(row=14, column=1, sticky="we")
+
+Checkbutton(root, text='Normalize pattern (shape 0..1)', font=font_type, variable=normalize_var).grid(sticky=W, row=15, column=0, columnspan=2, pady=(0,4))
 
 # ---------------- Run Function ---------------- #
 def run():
