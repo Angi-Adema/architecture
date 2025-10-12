@@ -170,6 +170,28 @@ def _read_elements_sheet(xlsx_path):
         ["Frame", "I", "J", "Section", "Material"]
     ]
 
+def _read_areas_sheet(xlsx_path):
+    """
+    Reads 'Areas' sheet (no headers). Supports triangles (3 points) or quads (4 points).
+    Column layout (no header):
+      0: AreaName
+      1: P1   2: P2   3: P3   4: P4(optional, can be blank/NaN)
+      5: Section(optional)   6: Material(optional)
+
+    Returns a normalized DataFrame with columns:
+      Area, P1, P2, P3, P4, Section, Material
+    """
+    import numpy as np
+    df = pd.read_excel(xlsx_path, sheet_name="Areas", header=None)
+    for c in range(df.shape[1], 7):
+        df[c] = None
+    df = df.rename(columns={
+        0: "Area", 1: "P1", 2: "P2", 3: "P3", 4: "P4", 5: "Section", 6: "Material"
+    })[["Area", "P1", "P2", "P3", "P4", "Section", "Material"]]
+    # normalize blanks
+    df["P4"] = df["P4"].where(pd.notna(df["P4"]) & (df["P4"].astype(str).str.len() > 0), None)
+    return df
+
 
 def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
                             dims=(0.30, 0.50), mat_type=2):
