@@ -641,8 +641,8 @@ def sweep_soil_pressure_by_depth(
 
 def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
     """
-    Build & analyze a model from 'Nodes' and 'Elements' sheets, then write results to:
-      <input_basename>_results.xlsx
+    Build & analyze a model from 'Nodes', 'Elements' (and optional 'Areas') sheets,
+    then write results to: <input_basename>_results.xlsx
     Returns a dict describing outputs.
     """
     if not os.path.exists(input_xlsx):
@@ -651,9 +651,22 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
     nodes = _read_nodes_sheet(input_xlsx)
     elems = _read_elements_sheet(input_xlsx)
 
+    # Try to read Areas (quietly skip if the sheet isn't present)
+    try:
+        areas = _read_areas_sheet(input_xlsx)  # may raise if sheet missing
+        if areas is not None and areas.empty:
+            areas = None
+    except Exception:
+        areas = None
+
     sap, model = _start_sap2000_v20(visible=visible)
     try:
         _build_model_from_excel(model, nodes, elems)
+
+        # Build areas if provided (triangles/quads by point names)
+        if areas is not None:
+            _build_areas_from_excel(model, areas)
+
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
@@ -676,16 +689,16 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
 
         # Debug
         _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
+        # Include areas count in debug, if present
+        if areas is not None:
+            _log(f"[run] areas_df={len(areas)} rows")
         _log(f"[run] first 5 node names: {nodes['Name'].astype(str).tolist()[:5]}")
         _log(f"[run] first 5 frame names: {elems['Frame'].astype(str).tolist()[:5]}")
-
-
 
         # Results
         node_names = nodes["Name"].astype(str).tolist()
         frame_names = elems["Frame"].astype(str).tolist()
 
-        # Debug
         import traceback
         try:
             disp_df = _collect_joint_displacements(model, node_names, "Dead")
@@ -699,6 +712,11 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
             nodes.to_excel(xlw, sheet_name="Nodes", index=False)
             elems.to_excel(xlw, sheet_name="Elements", index=False)
+
+            # Include Areas sheet in the output workbook (for traceability)
+            if areas is not None:
+                areas.to_excel(xlw, sheet_name="Areas", index=False)
+
             if not disp_df.empty:
                 disp_df.to_excel(xlw, sheet_name="JointDisplacements", index=False)
             if not force_df.empty:
@@ -709,6 +727,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
             "results_path": results_xlsx,
             "num_nodes": len(nodes),
             "num_frames": len(elems),
+            # Optional: include number of areas in the return dict
+            "num_areas": (0 if areas is None else len(areas)),
             "disp_rows": 0 if disp_df.empty else len(disp_df),
             "force_rows": 0 if force_df.empty else len(force_df),
         }
@@ -718,6 +738,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
                 sap.ApplicationExit(True)  # True => don't prompt to save
         except Exception:
             pass
+
 
 
 
