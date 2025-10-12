@@ -7,6 +7,7 @@
 import importlib
 import os
 import pandas as pd
+import numpy as np
 import comtypes.client as cc
 
 # --- DEBUG SWITCH ---
@@ -181,7 +182,6 @@ def _read_areas_sheet(xlsx_path):
     Returns a normalized DataFrame with columns:
       Area, P1, P2, P3, P4, Section, Material
     """
-    import numpy as np
     df = pd.read_excel(xlsx_path, sheet_name="Areas", header=None)
     for c in range(df.shape[1], 7):
         df[c] = None
@@ -243,6 +243,59 @@ def _build_model_from_excel(model, nodes_df, elems_df,
             model.FrameObj.AddByPoint(i_pt, j_pt, sec, fname, "Global")
         except Exception as e:
             raise RuntimeError(f"Failed to create frame {fname} ({i_pt}->{j_pt}): {e}")
+        
+def _build_areas_from_excel(model, areas_df,
+                            default_section=("SHELL_200", "CONC40", 0.20)):
+    """
+    Creates area (shell) objects by named joints:
+      - Triangles: P1,P2,P3 (P4 is None)
+      - Quads:     P1,P2,P3,P4
+    Also ensures a default shell section.
+    """
+    sec_name, mat_name, thick_m = default_section
+    # Ensure a simple shell prop (thin/plate). Some versions use SetShell_1/2; try common names.
+    try:
+        model.PropArea.SetShell(sec_name, mat_name, float(thick_m))
+    except Exception:
+        try:
+            model.PropArea.SetShell_1(sec_name, mat_name, float(thick_m))
+        except Exception:
+            pass
+    try:
+        model.PropMaterial.SetMaterial(mat_name, 2)  # 2 = concrete
+    except Exception:
+        pass
+
+    for _, r in areas_df.iterrows():
+        name = str(r["Area"])
+        p1, p2, p3, p4 = str(r["P1"]), str(r["P2"]), str(r["P3"]), r["P4"]
+        sec = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
+        mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
+        if pd.notna(r["Material"]):
+            try:
+                model.PropMaterial.SetMaterial(mat, 2)
+            except Exception:
+                pass
+        # (re)define the section if a custom one appears
+        try:
+            model.PropArea.SetShell(sec, mat, float(thick_m))
+        except Exception:
+            pass
+
+        try:
+            if p4 is None or (isinstance(p4, float) and pd.isna(p4)):
+                # triangle (3 points)
+                model.AreaObj.AddByPoint(p1, p2, p3, name)
+            else:
+                p4 = str(p4)
+                model.AreaObj.AddByPoint(p1, p2, p3, p4, name)
+            # assign section
+            try:
+                model.AreaObj.SetProperty(name, sec)
+            except Exception:
+                pass
+        except Exception as e:
+            raise RuntimeError(f"Failed to create area {name} ({p1},{p2},{p3},{p4}): {e}")
 
 
 def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
