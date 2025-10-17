@@ -686,6 +686,30 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
         except Exception:
             pass
+        
+        # SOIL SWEEP (if soil config provided in 'Soil' sheet)
+        soil_results = None
+        if soil:
+            try:
+                soil_results = sweep_soil_pressure_by_depth(
+                    model,
+                    depth_min=soil.get("depth_min", 0.0),
+                    depth_max=soil.get("depth_max", 4.0),
+                    depth_step=soil.get("depth_step", 0.5),
+                    gamma_soil_N_per_m3=soil.get("gamma", 18000.0),
+                    load_pattern_name=soil.get("load_pattern", "SOIL"),
+                    joint_pattern_name=soil.get("joint_pattern", "SOIL_DEPTH"),
+                    vertical_axis=soil.get("axis", "Z"),
+                    normalize_pattern=soil.get("normalize", False),
+                    results_case_name=soil.get("case_name", "SOIL_CASE"),
+                    replace_area_load_each_step=True,
+                    visible=visible,
+                    close_after=False,
+                    results_book_path=None
+                )
+            except Exeption as e:
+                _log("[SoilSweep] Skipped:", e)
+        
 
         # Debug
         _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
