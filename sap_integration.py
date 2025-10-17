@@ -710,7 +710,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
             except Exeption as e:
                 _log("[SoilSweep] Skipped:", e)
         
-
         # Debug
         _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
         # Include areas count in debug, if present
@@ -745,6 +744,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
                 disp_df.to_excel(xlw, sheet_name="JointDisplacements", index=False)
             if not force_df.empty:
                 force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
+
+            if soil_results:
+                for depth_val, ddf in zip(soil_results["depths"], soil_results["displacements_by_step"]):
+                    if ddf.empty:
+                        continue
+                    dtag = f"d{str(depth_val).replace('.', '_')}"
+                    ddf.to_excel(xlw, sheet_name=f"SoilDisp_{dtag}", index=False)
 
         return {
             "model_path": sdb_path,
