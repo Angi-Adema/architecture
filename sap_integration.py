@@ -16,6 +16,12 @@ def _ensure_xlsxwriter():
     except ImportError:
         raise RuntimeError("Please `pip install xlsxwriter` to write results.")
     
+def _ensure_openpyxl():
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        raise RuntimeError("Please `pip install openpyxl` to read .xlsx files.")
+    
 # --- DEBUG SWITCH ---
 DEBUG = True
 
@@ -828,6 +834,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     """
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
+    
+    _ensure_openpyxl()
 
     nodes = _read_nodes_sheet(input_xlsx)
     elems = _read_elements_sheet(input_xlsx)
