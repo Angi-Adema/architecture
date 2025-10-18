@@ -201,7 +201,6 @@ def run():
         ax.set_xlim([-H, H]); ax.set_ylim([-H, H]); ax.set_zlim([-H, H])
         ax.scatter(nodes[:, 1], nodes[:, 2], nodes[:, 3], color='black')
         plt.tight_layout(); plt.show()
-
         # Write Excel workbook
         wb = xlsxwriter.Workbook(filepath)
 
@@ -219,7 +218,19 @@ def run():
                 ws_elements.write(i, j, row[j] if j < len(row) else None)
 
         wb.close()
-
+    
+        # Build specs from GUI
+        soil_spec = {
+            "depth_min": depth_min_var.get(),
+            "depth_max": depth_max_var.get(),
+            "depth_step": depth_step_var.get(),
+            "gamma": gamma_var.get(),
+            "axis": axis_var.get(),
+            "normalize": bool(normalize_var.get()),
+            "load_pattern": "SOIL",
+            "joint_pattern": "SOIL_DEPTH",
+            "case_name": "SOIL_CASE",
+        }
         material_spec = {
             "name":   mat_name_var.get(),
             "type":   mat_type_var.get(),      # "Concrete" or "Steel"
@@ -227,46 +238,30 @@ def run():
             "E":      E_var.get(),
             "nu":     nu_var.get(),
             "alpha":  alpha_var.get(),
-            "gamma":  gamma_var_mat.get(),
+            "gamma":  gamma_var_mat.get(),     # N/m^3
         }
-
-        results = run_sap2000_analysis(
-            filepath,
-            visible=True,
-            close_after=bool(var_autoclose.get()),
-            soil={  # if you’re already passing soil params
-                "depth_min": depth_min_var.get(),
-                "depth_max": depth_max_var.get(),
-                "depth_step": depth_step_var.get(),
-                "gamma": gamma_var.get(),
-                "axis": axis_var.get(),
-                "normalize": bool(normalize_var.get()),
-                "load_pattern": "SOIL",
-                "joint_pattern": "SOIL_DEPTH",
-                "case_name": "SOIL_CASE",
-            },
-            material=material_spec,  
-        )
-
 
         # ---- Run SAP2000 analysis on this file ----
         try:
             results = run_sap2000_analysis(
                 filepath,
-                visible=True,                         # show SAP2000 while running
-                close_after=bool(var_autoclose.get()) # auto-close based on checkbox
+                visible=True,
+                close_after=bool(var_autoclose.get()),
+                soil=soil_spec,
+                material=material_spec,
             )
             messagebox.showinfo(
                 "SAP2000 Analysis Complete",
                 f"Input:   {os.path.basename(filepath)}\n"
                 f"Model:   {os.path.basename(results['model_path'])}\n"
                 f"Results: {os.path.basename(results['results_path'])}\n\n"
-                f"Nodes: {results['num_nodes']}   Frames: {results['num_frames']}\n"
-                f"Displacements rows: {results['disp_rows']}\n"
-                f"Frame forces rows: {results['force_rows']}"
+                f"Nodes: {results['num_nodes']}   Frames: {results['num_frames']}"
+                + (f"   Areas: {results.get('num_areas', 0)}" if 'num_areas' in results else "")
+                + f"\nDisplacements rows: {results['disp_rows']}\n"
+                + f"Frame forces rows: {results['force_rows']}\n"
+                + f"Material: {material_spec['name']} ({material_spec['type']})"
             )
         except Exception as e:
-            # Debug
             import traceback
             print("\n=== Umbrella caught exception ===\n", flush=True)
             traceback.print_exc()
