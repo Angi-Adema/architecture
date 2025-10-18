@@ -134,7 +134,7 @@ if os.path.exists(img_path):
         schematic = ImageTk.PhotoImage(img_resized)
         img_label = Label(image=schematic)
         img_label.image = schematic  # prevent GC
-        img_label.grid(row=17, column=0, columnspan=3, pady=(8, 0))
+        img_label.grid(row=19, column=0, columnspan=3, pady=(8, 0))
     except Exception:
         pass
 
@@ -219,6 +219,35 @@ def run():
                 ws_elements.write(i, j, row[j] if j < len(row) else None)
 
         wb.close()
+
+        material_spec = {
+            "name":   mat_name_var.get(),
+            "type":   mat_type_var.get(),      # "Concrete" or "Steel"
+            "region": mat_region_var.get(),    # "User", "United States", etc.
+            "E":      E_var.get(),
+            "nu":     nu_var.get(),
+            "alpha":  alpha_var.get(),
+            "gamma":  gamma_var_mat.get(),
+        }
+
+        results = run_sap2000_analysis(
+            filepath,
+            visible=True,
+            close_after=bool(var_autoclose.get()),
+            soil={  # if you’re already passing soil params
+                "depth_min": depth_min_var.get(),
+                "depth_max": depth_max_var.get(),
+                "depth_step": depth_step_var.get(),
+                "gamma": gamma_var.get(),
+                "axis": axis_var.get(),
+                "normalize": bool(normalize_var.get()),
+                "load_pattern": "SOIL",
+                "joint_pattern": "SOIL_DEPTH",
+                "case_name": "SOIL_CASE",
+            },
+            material=material_spec,  
+        )
+
 
         # ---- Run SAP2000 analysis on this file ----
         try:
