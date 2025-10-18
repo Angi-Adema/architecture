@@ -97,6 +97,33 @@ nu_var  = DoubleVar(value=0.20)               # Poisson's ratio
 alpha_var = DoubleVar(value=1.0e-5)           # Thermal coeff [1/°C]
 gamma_var_mat = DoubleVar(value=24000.0)      # Unit weight [N/m^3] (Concrete ~24 kN/m³)
 
+# --- Material section ---
+mat_frame = Frame(root)
+mat_frame.grid(row=16, column=0, columnspan=3, sticky="we", pady=(6, 8))
+
+Label(mat_frame, text='Material', font=font_head).grid(sticky=W, row=0, column=0, columnspan=4, pady=(0,6))
+
+Label(mat_frame, text='Name', font=font_type).grid(sticky=W, row=1, column=0)
+Entry(mat_frame, textvariable=mat_name_var, width=12).grid(row=1, column=1)
+
+Label(mat_frame, text='Type', font=font_type).grid(sticky=W, row=1, column=2)
+OptionMenu(mat_frame, mat_type_var, "Concrete", "Steel").grid(row=1, column=3, sticky="we")
+
+Label(mat_frame, text='Region', font=font_type).grid(sticky=W, row=2, column=0)
+OptionMenu(mat_frame, mat_region_var, "User", "United States").grid(row=2, column=1, sticky="we")
+
+Label(mat_frame, text='E [Pa]', font=font_type).grid(sticky=W, row=2, column=2)
+Entry(mat_frame, textvariable=E_var, width=12).grid(row=2, column=3)
+
+Label(mat_frame, text='ν', font=font_type).grid(sticky=W, row=3, column=0)
+Entry(mat_frame, textvariable=nu_var, width=12).grid(row=3, column=1)
+
+Label(mat_frame, text='α [1/°C]', font=font_type).grid(sticky=W, row=3, column=2)
+Entry(mat_frame, textvariable=alpha_var, width=12).grid(row=3, column=3)
+
+Label(mat_frame, text='γ [N/m³]', font=font_type).grid(sticky=W, row=4, column=0)
+Entry(mat_frame, textvariable=gamma_var_mat, width=12).grid(row=4, column=1)
+
 # ---------------- Load Schematic Image ---------------- #
 img_path = os.path.join(base_path, 'Geometry.png')
 if os.path.exists(img_path):
