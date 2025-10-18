@@ -7,7 +7,6 @@
 import importlib
 import os
 import pandas as pd
-import numpy as np
 import comtypes.client as cc
 
 # --- DEBUG SWITCH ---
@@ -81,7 +80,6 @@ def _start_sap2000_v20(visible=True):
     try:
         if tlb_path:
             cc.GetModule(tlb_path)
-            # e.g., "SAP2000v20.tlb" -> module "SAP2000v20"
             module_name = os.path.splitext(os.path.basename(tlb_path))[0]
             s2k = importlib.import_module(f"comtypes.gen.{module_name}")
     except Exception:
@@ -92,25 +90,50 @@ def _start_sap2000_v20(visible=True):
     try:
         sap = cc.CreateObject("CSI.SAP2000.API.SapObject")
     except Exception:
-        # Attach or last-resort launch then attach
-        try:
-            sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
-        except Exception:
-            if not exe_path:
-                raise RuntimeError("Could not locate SAP2000.exe. Update DIR_CANDIDATES.")
-            import time
-            os.startfile(exe_path)
-            for _ in range(20):
-                time.sleep(1)
-                try:
-                    sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
-                    break
-                except Exception:
-                    pass
-            if sap is None:
-                raise RuntimeError("SAP2000 did not register in time after launch.")
+        # Helpers (some installs register v1, some v20)
+        helper = None
+        for progid in ("SAP2000v1.Helper", "SAP2000v20.Helper"):
+            try:
+                helper = cc.CreateObject(progid)
+                break
+            except Exception:
+                continue
+        if helper is not None:
+            try:
+                sap = helper.CreateObjectProgID("CSI.SAP2000.API.SapObject")
+            except Exception:
+                sap = None
 
-    # Start (safe if already running)
+        # Attach to a running instance
+        if sap is None:
+            try:
+                sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
+            except Exception:
+                # Last resort: launch then attach
+                if not exe_path:
+                    raise RuntimeError("Could not locate SAP2000.exe. Update DIR_CANDIDATES.")
+                import time, os as _os
+                _os.startfile(exe_path)
+                _log("Launched EXE, attaching…")
+
+                for _ in range(20):
+                    time.sleep(1)
+                    try:
+                        sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
+                        _log("Attached to SAP2000 instance.")
+                        break
+                    except Exception:
+                        pass
+                
+                if sap is None:
+                    _log("Timed out waiting for SAP2000 to register COM object.")
+                    raise RuntimeError("SAP2000 did not register in time after launch.")
+
+    # Fail fast if we still didn't get an object 
+    if sap is None:
+        raise RuntimeError("Could not obtain CSI.SAP2000.API.SapObject via CreateObject, Helper, or GetActiveObject.")
+
+    # ---- common startup (run once) ----
     try:
         sap.ApplicationStart()
     except Exception:
@@ -120,10 +143,9 @@ def _start_sap2000_v20(visible=True):
     except Exception:
         pass
 
-    # SAP2000 v20: Visible() takes no arguments
     if visible:
         try:
-            sap.Visible()
+            sap.Visible()  # v20: no args
         except Exception:
             pass
 
@@ -131,10 +153,19 @@ def _start_sap2000_v20(visible=True):
     model.InitializeNewModel()
     model.File.NewBlank()
 
-    # Use enums if available
+    # Set units (enum if available, numeric fallback otherwise)
     try:
         if s2k:
             model.SetPresentUnits(s2k.eUnits_kN_m_C)
+        else:
+            model.SetPresentUnits(6)   # eUnits_kN_m_C in v20
+    except Exception:
+        pass
+
+    # Sanity check units.
+    try:
+        ret, units = model.GetPresentUnits()
+        _log(f"Present units code: {units}")
     except Exception:
         pass
 
@@ -206,6 +237,65 @@ def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
     except Exception:
         pass  # ok if already exists
 
+def _ensure_material_defined(model, spec):
+    """
+    Ensure a material exists and has basic properties.
+    spec keys: name, type ('Concrete'|'Steel'), region ('User'|...), E, nu, alpha, gamma (N/m^3)
+    """
+    if not spec:
+        return None
+    name   = str(spec.get("name", "CONC40"))
+    mtype  = str(spec.get("type", "Concrete")).strip().lower()
+    region = str(spec.get("region", "User"))
+    # SAP codes: 1=Steel, 2=Concrete (common in v20)
+    mat_code = 2 if mtype == "concrete" else 1
+
+    # Define material (handle different API variants)
+    try:
+        model.PropMaterial.SetMaterial(name, mat_code)
+    except Exception:
+        try:
+            model.PropMaterial.SetMaterial_1(name, region, "", "")
+        except Exception:
+            pass  # ok if it already exists
+
+    # Convert inputs assuming model units = kN-m-C (as set in _start_sap2000_v20)
+    E_pa   = float(spec.get("E", 30e9))         # Pa (= N/m^2)
+    E_kPa  = E_pa / 1000.0                      # kN/m^2
+    nu     = float(spec.get("nu", 0.2))
+    alpha  = float(spec.get("alpha", 1.0e-5))   # 1/C
+
+    try:
+        model.PropMaterial.SetMPIsotropic(name, E_kPa, nu, alpha)
+    except Exception:
+        try:
+            model.PropMaterial.SetMPIsotropic_1(name, E_kPa, nu, alpha)
+        except Exception:
+            pass
+
+    # Unit weight & mass density
+    gamma_Npm3 = float(spec.get("gamma", 24000.0))  # N/m^3
+    gamma_kNpm3 = gamma_Npm3 / 1000.0               # kN/m^3
+    mass_kN_s2_m4 = gamma_kNpm3 / 9.80665           # (kN/m^3) / g  => consistent mass density
+    try:
+        model.PropMaterial.SetWeightAndMass(name, gamma_kNpm3, mass_kN_s2_m4)
+    except Exception:
+        pass
+
+    return name
+
+def _mat_code_from_name(name: str, default: int = 2) -> int:
+    """
+    Guess SAP material type code from a material name.
+    Returns 1=Steel, 2=Concrete (default=2).
+    """
+    n = (name or "").strip().lower()
+    if any(k in n for k in ("steel", "stl", "a36", "a992", "fy", "s ")):
+        return 1
+    if any(k in n for k in ("conc", "concrete", "c", "fc'", "fc ")):
+        return 2
+    return default
+
 
 def _build_model_from_excel(model, nodes_df, elems_df,
                             default_section=("RECT_300x500", "CONC40", (0.30, 0.50))):
@@ -222,23 +312,33 @@ def _build_model_from_excel(model, nodes_df, elems_df,
             pass  # likely duplicate
 
     # Frames
+    b, h = dims
     for _, r in elems_df.iterrows():
         fname = str(r["Frame"])
         i_pt = str(r["I"])
         j_pt = str(r["J"])
-        sec = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
-        mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
+        sec  = str(r["Section"])  if pd.notna(r["Section"])  else sec_name
+        mat  = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
 
+        # If a material is specified in the sheet, make sure it exists
         if pd.notna(r["Material"]):
             try:
-                model.PropMaterial.SetMaterial(mat, 2)
+                # Common signature: SetMaterial(name, type)  (1=Steel, 2=Concrete)
+                model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))
             except Exception:
-                pass
+                try:
+                    # Fallback overload with region
+                    model.PropMaterial.SetMaterial_1(mat, "User", "", "")
+                except Exception:
+                    pass  # ok if it already exists or other versions
+
+        # Ensure/define the section (rectangle b x h) with that material
         try:
-            model.PropFrame.SetRectangle(sec, mat, 0.30, 0.50)
+            model.PropFrame.SetRectangle(sec, mat, float(b), float(h))
         except Exception:
             pass
-
+        
+        # Add the frame element by point names
         try:
             model.FrameObj.AddByPoint(i_pt, j_pt, sec, fname, "Global")
         except Exception as e:
@@ -273,7 +373,7 @@ def _build_areas_from_excel(model, areas_df,
         mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
         if pd.notna(r["Material"]):
             try:
-                model.PropMaterial.SetMaterial(mat, 2)
+                model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))
             except Exception:
                 pass
         # (re)define the section if a custom one appears
@@ -548,14 +648,30 @@ def sweep_soil_pressure_by_depth(
 ):
     """
     Sweep soil pressure by depth (0.5 m steps by default) and collect results.
+    Assigns Area Loads -> Surface Pressure -> By Joint Pattern using a joint-pattern
+    whose value is the local depth (or normalized depth) at each joint.
+
+    If normalize_pattern:
+        pattern_value = (min(raw_depth, d) / d)   # 0..1
+        multiplier    = gamma * d                 # N/m^2 at step depth d
+    else:
+        pattern_value = min(raw_depth, d)         # meters
+        multiplier    = gamma                     # N/m^3
     """
+    # ---- Input guards ----
+    if depth_step <= 0:
+        raise ValueError("depth_step must be > 0")
+    if depth_min > depth_max:
+        depth_min, depth_max = depth_max, depth_min  # swap defensively
+
+    # Ensure load pattern and joint pattern exist
     try:
-        model.LoadPatterns.Add(load_pattern_name, 1, 0.0)  # 1=Dead
+        model.LoadPatterns.Add(load_pattern_name, 1, 0.0)  # 1 = Dead (type), self-weight=0 for SOIL
     except Exception:
         pass
-
     _ensure_joint_pattern_exists(model, joint_pattern_name)
 
+    # Ensure we have areas and joints
     area_names = _get_all_area_names(model)
     if not area_names:
         raise RuntimeError("No area (shell) objects found. Soil pressure must be assigned to areas.")
@@ -564,34 +680,57 @@ def sweep_soil_pressure_by_depth(
     if not joints:
         raise RuntimeError("No joints found in model to set joint-pattern values.")
 
-    axis_map = {"X": 0, "Y": 1, "Z": 2}
-    if vertical_axis.upper() not in axis_map:
+    # Vertical axis + surface elevation
+    ax = vertical_axis.upper()
+    if ax not in ("X", "Y", "Z"):
         raise ValueError("vertical_axis must be one of 'X','Y','Z'")
-    idx = axis_map[vertical_axis.upper()]
 
-    surface_elev = max((xyz[idx] for (_, *xyz) in ((n, x, y, z) for n, x, y, z in joints)))
+    if ax == "X":
+        surface_elev = max(x for _, x, _, _ in joints)
+        axis_index = 0
+    elif ax == "Y":
+        surface_elev = max(y for _, _, y, _ in joints)
+        axis_index = 1
+    else:
+        surface_elev = max(z for _, _, _, z in joints)
+        axis_index = 2
 
-    results = []
-    d = depth_min
+    # Define / configure a static case that uses the soil load
     try:
         model.LoadCases.StaticLinear.SetCase(results_case_name)
         model.LoadCases.StaticLinear.SetLoads(results_case_name, 1, [load_pattern_name], [1.0])
     except Exception:
         pass
 
+    results = []
+    d = float(depth_min)
+
+    # Sweep from min to max (with a small epsilon for floating accumulation)
     while d <= depth_max + 1e-9:
+        d = round(d, 6)  # keep sheet/tab names clean and stable
+
+        # Compute multiplier ONCE per step
+        if normalize_pattern:
+            multiplier = gamma_soil_N_per_m3 * d  # N/m^2
+        else:
+            multiplier = gamma_soil_N_per_m3       # N/m^3
+
+        # 1) Set joint pattern values for this step depth d
         for joint_name, x, y, z in joints:
-            elev = (x, y, z)[idx]
+            elev = (x, y, z)[axis_index]
             raw_depth = max(0.0, surface_elev - elev)
             depth_for_step = min(raw_depth, d)
-            if normalize_pattern:
-                pattern_value = 0.0 if d <= 1e-12 else (depth_for_step / d)
-                multiplier = gamma_soil_N_per_m3 * d  # N/m^2
-            else:
-                pattern_value = depth_for_step                 # m
-                multiplier = gamma_soil_N_per_m3               # N/m^3
-            _set_joint_pattern_value_for_point(model, joint_name, joint_pattern_name, pattern_value)
 
+            if normalize_pattern:
+                pattern_value = 0.0 if d <= 1e-12 else (depth_for_step / d)  # 0..1
+            else:
+                pattern_value = depth_for_step  # meters
+
+            _set_joint_pattern_value_for_point(
+                model, joint_name, joint_pattern_name, pattern_value
+            )
+
+        # 2) Assign pressure to all areas via the joint pattern
         for an in area_names:
             _assign_area_surface_pressure_by_joint_pattern(
                 model,
@@ -603,6 +742,7 @@ def sweep_soil_pressure_by_depth(
                 replace=replace_area_load_each_step
             )
 
+        # 3) Solve and collect
         _run_analysis(model)
 
         node_names = [n for (n, _, _, _) in joints]
@@ -611,17 +751,19 @@ def sweep_soil_pressure_by_depth(
         except Exception:
             disp_df = _collect_joint_displacements(model, node_names, case="Dead")
 
-        force_df = pd.DataFrame()
+        force_df = pd.DataFrame()  # add frame/area forces here later if desired
 
-        disp_df.insert(0, "Depth_m", round(d, 3))
+        # Tag the outputs with the step depth and multiplier used
+        disp_df.insert(0, "Depth_m", d)
         disp_df.insert(1, "Multiplier", multiplier)
         if not force_df.empty:
-            force_df.insert(0, "Depth_m", round(d, 3))
+            force_df.insert(0, "Depth_m", d)
             force_df.insert(1, "Multiplier", multiplier)
 
-        results.append((round(d, 3), disp_df, force_df))
-        d = round(d + depth_step, 10)
+        results.append((d, disp_df, force_df))
+        d = round(d + depth_step, 6)
 
+    # Optional: write a dedicated results book
     if results_book_path:
         with pd.ExcelWriter(results_book_path, engine="xlsxwriter") as xlw:
             for depth_val, disp_df, force_df in results:
@@ -639,11 +781,17 @@ def sweep_soil_pressure_by_depth(
     }
 
 
-def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
+def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None, material=None):
     """
     Build & analyze a model from 'Nodes', 'Elements' (and optional 'Areas') sheets,
     then write results to: <input_basename>_results.xlsx
-    Returns a dict describing outputs.
+
+    Args:
+        input_xlsx: path to spreadsheet
+        visible: show SAP2000 UI
+        close_after: close SAP2000 when done
+        soil: dict|None soil sweep config
+        material: dict|None material definition to ensure & use by default
     """
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
@@ -653,7 +801,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
 
     # Try to read Areas (quietly skip if the sheet isn't present)
     try:
-        areas = _read_areas_sheet(input_xlsx)  # may raise if sheet missing
+        areas = _read_areas_sheet(input_xlsx)
         if areas is not None and areas.empty:
             areas = None
     except Exception:
@@ -661,11 +809,22 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
 
     sap, model = _start_sap2000_v20(visible=visible)
     try:
-        _build_model_from_excel(model, nodes, elems)
+        # --- NEW: define/ensure material before creating any sections ---
+        selected_material = _ensure_material_defined(model, material) if material else None
+        default_mat = selected_material or "CONC40"
 
-        # Build areas if provided (triangles/quads by point names)
+        # Build frames with default section that uses the chosen material
+        _build_model_from_excel(
+            model, nodes, elems,
+            default_section=("RECT_300x500", default_mat, (0.30, 0.50))
+        )
+
+        # Build areas (shells) with default shell property that uses the chosen material
         if areas is not None:
-            _build_areas_from_excel(model, areas)
+            _build_areas_from_excel(
+                model, areas,
+                default_section=("SHELL_200", default_mat, 0.20)
+            )
 
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
@@ -686,8 +845,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
         except Exception:
             pass
-        
-        # SOIL SWEEP (if soil config provided in 'Soil' sheet)
+
+        # --- Soil sweep (only if provided) ---
         soil_results = None
         if soil:
             try:
@@ -707,12 +866,11 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
                     close_after=False,
                     results_book_path=None
                 )
-            except Exeption as e:
+            except Exception as e:  # <-- fixed typo
                 _log("[SoilSweep] Skipped:", e)
-        
+
         # Debug
         _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
-        # Include areas count in debug, if present
         if areas is not None:
             _log(f"[run] areas_df={len(areas)} rows")
         _log(f"[run] first 5 node names: {nodes['Name'].astype(str).tolist()[:5]}")
@@ -726,17 +884,17 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
         try:
             disp_df = _collect_joint_displacements(model, node_names, "Dead")
             force_df = _collect_frame_end_forces(model, frame_names, "Dead")
-        except Exception as e:
+        except Exception:
             _log("[Error] While collecting results:")
             _log(traceback.format_exc())
             raise
 
         results_xlsx = base + "_results.xlsx"
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
+            # Always write model definition sheets
             nodes.to_excel(xlw, sheet_name="Nodes", index=False)
             elems.to_excel(xlw, sheet_name="Elements", index=False)
 
-            # Include Areas sheet in the output workbook (for traceability)
             if areas is not None:
                 areas.to_excel(xlw, sheet_name="Areas", index=False)
 
@@ -744,7 +902,33 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
                 disp_df.to_excel(xlw, sheet_name="JointDisplacements", index=False)
             if not force_df.empty:
                 force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
+            
+            # Optional Soil config and summary
+            if soil_results:
+                # a) Echo the soil config used
+                soil_cfg_df = pd.DataFrame([{
+                    "depth_min": soil.get("depth_min", 0.0),
+                    "depth_max": soil.get("depth_max", 4.0),
+                    "depth_step": soil.get("depth_step", 0.5),
+                    "gamma (N/m^3)": soil.get("gamma", 18000.0),
+                    "axis": soil.get("axis", "Z"),
+                    "normalize": soil.get("normalize", False),
+                    "load_pattern": soil.get("load_pattern", "SOIL"),
+                    "joint_pattern": soil.get("joint_pattern", "SOIL_DEPTH"),
+                    "case_name": soil.get("case_name", "SOIL_CASE"),
+                }])
+                soil_cfg_df.to_excel(xlw, sheet_name="SoilConfig", index=False) 
 
+                # b) One-row-per-step summary (depth + multiplier)
+                #    Rebuild multiplier exactly the way the sweep used it:
+                depths = soil_results["depths"]
+                normalize = soil.get("normalize", False)
+                gamma_val = soil.get("gamma", 18000.0)
+                summary_rows = []
+                for d in depths:
+                    mult = (gamma_val * d) if normalize else gamma_val
+                    summary_rows.append({"Depth_m": d, "Multiplier": mult})
+                pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="SoilSummary", index=False)
             if soil_results:
                 for depth_val, ddf in zip(soil_results["depths"], soil_results["displacements_by_step"]):
                     if ddf.empty:
@@ -757,17 +941,18 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False):
             "results_path": results_xlsx,
             "num_nodes": len(nodes),
             "num_frames": len(elems),
-            # Optional: include number of areas in the return dict
             "num_areas": (0 if areas is None else len(areas)),
             "disp_rows": 0 if disp_df.empty else len(disp_df),
             "force_rows": 0 if force_df.empty else len(force_df),
         }
-    finally:  # <-- align with the try:
+    finally:
         try:
-            if close_after or not visible:
+            # only call if `sap` exists in this scope and we actually want to close/keep hidden
+            if 'sap' in locals() and (close_after or not visible):
                 sap.ApplicationExit(True)  # True => don't prompt to save
         except Exception:
             pass
+
 
 
 
