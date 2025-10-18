@@ -9,6 +9,13 @@ import os
 import pandas as pd
 import comtypes.client as cc
 
+# Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
+def _ensure_xlsxwriter():
+    try:
+        import xlsxwriter  # noqa: F401
+    except ImportError:
+        raise RuntimeError("Please `pip install xlsxwriter` to write results.")
+    
 # --- DEBUG SWITCH ---
 DEBUG = True
 
@@ -45,6 +52,7 @@ def _select_case(model, case):
     try:
         model.Results.Setup.DeselectAllCasesAndCombosForOutput()
         model.Results.Setup.SetCaseSelectedForOutput(case)
+        model.Results.Setup.SetOptionMode(0)  # 0 = use current selection, if available
     except Exception:
         pass
 
@@ -132,6 +140,11 @@ def _start_sap2000_v20(visible=True):
     # Fail fast if we still didn't get an object 
     if sap is None:
         raise RuntimeError("Could not obtain CSI.SAP2000.API.SapObject via CreateObject, Helper, or GetActiveObject.")
+    
+    try:
+        _log("SAP2000 version:", sap.GetVersion())  # returns string on many v20 builds
+    except Exception:
+        pass
 
     # ---- common startup (run once) ----
     try:
@@ -151,20 +164,33 @@ def _start_sap2000_v20(visible=True):
 
     model = sap.SapModel
     model.InitializeNewModel()
-    model.File.NewBlank()
 
-    # Set units (enum if available, numeric fallback otherwise)
+    # Try plain NewBlank(), fall back to metric-flag variant on older builds
     try:
-        if s2k:
-            model.SetPresentUnits(s2k.eUnits_kN_m_C)
-        else:
-            model.SetPresentUnits(6)   # eUnits_kN_m_C in v20
+        model.File.NewBlank()
     except Exception:
-        pass
-
-    # Sanity check units.
+        try:
+            model.File.NewBlank(True)  # some builds accept a 'metric' flag
+        except Exception as e:
+            _log(f"NewBlank failed with and without metric flag: {e}")
+            raise
+    # ---- Set units (guarded). Prefer enum; fallback to numeric 6 for v20 (kN–m–C). ----
     try:
-        ret, units = model.GetPresentUnits()
+        if hasattr(model, "SetPresentUnits"):
+            if s2k and hasattr(s2k, "eUnits_kN_m_C"):
+                model.SetPresentUnits(s2k.eUnits_kN_m_C)
+            else:
+                # NOTE: In SAP2000 v20, numeric code 6 = kN–m–C.
+                # Future versions may differ; prefer the enum when available.
+                model.SetPresentUnits(6)
+        else:
+            _log("SetPresentUnits not available on this build; leaving default units.")
+    except Exception:
+        _log("Unable to set present units; leaving default units.")
+
+    # Optional: sanity check
+    try:
+        ret, units = model.GetPresentUnits()  # <- capital G
         _log(f"Present units code: {units}")
     except Exception:
         pass
@@ -424,7 +450,13 @@ def _add_default_self_weight(model, pattern="Dead", mult=1.0):
 
 
 def _run_analysis(model):
-    return model.Analyze.RunAnalysis()
+    try:
+        ret = model.Analyze.RunAnalysis()
+        _log(f"RunAnalysis ret={ret}")
+        return ret
+    except Exception as e:
+        _log(f"RunAnalysis raised: {e}")
+        raise
 
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
@@ -765,6 +797,7 @@ def sweep_soil_pressure_by_depth(
 
     # Optional: write a dedicated results book
     if results_book_path:
+        _ensure_xlsxwriter()
         with pd.ExcelWriter(results_book_path, engine="xlsxwriter") as xlw:
             for depth_val, disp_df, force_df in results:
                 dtag = f"d{str(depth_val).replace('.', '_')}"
@@ -798,6 +831,12 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     nodes = _read_nodes_sheet(input_xlsx)
     elems = _read_elements_sheet(input_xlsx)
+
+    # ---- validate required sheets before doing anything else ----
+    if nodes.empty:
+        raise ValueError("Nodes sheet is empty.")
+    if elems.empty:
+        raise ValueError("Elements sheet is empty.")
 
     # Try to read Areas (quietly skip if the sheet isn't present)
     try:
@@ -850,6 +889,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         soil_results = None
         if soil:
             try:
+                # Read user pref for replacing vs stacking loads each step
+                replace_area_load_each_step = soil.get("replace_each_step", True)
+
                 soil_results = sweep_soil_pressure_by_depth(
                     model,
                     depth_min=soil.get("depth_min", 0.0),
@@ -861,7 +903,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     vertical_axis=soil.get("axis", "Z"),
                     normalize_pattern=soil.get("normalize", False),
                     results_case_name=soil.get("case_name", "SOIL_CASE"),
-                    replace_area_load_each_step=True,
+                    replace_area_load_each_step=replace_area_load_each_step,
                     visible=visible,
                     close_after=False,
                     results_book_path=None
@@ -890,6 +932,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             raise
 
         results_xlsx = base + "_results.xlsx"
+
+        _ensure_xlsxwriter()
+
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
             # Always write model definition sheets
             nodes.to_excel(xlw, sheet_name="Nodes", index=False)
@@ -916,6 +961,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     "load_pattern": soil.get("load_pattern", "SOIL"),
                     "joint_pattern": soil.get("joint_pattern", "SOIL_DEPTH"),
                     "case_name": soil.get("case_name", "SOIL_CASE"),
+                    "replace_each_step": soil.get("replace_each_step", True),
                 }])
                 soil_cfg_df.to_excel(xlw, sheet_name="SoilConfig", index=False) 
 
