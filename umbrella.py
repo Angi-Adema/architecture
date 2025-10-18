@@ -88,6 +88,15 @@ gamma_var      = DoubleVar(value=18000.0)   # N/m^3
 axis_var       = StringVar(value="Z")
 normalize_var  = BooleanVar(value=False)
 
+# --- Material inputs ---
+mat_name_var = StringVar(value="CONC40")      # the material name you'll use in sections
+mat_type_var = StringVar(value="Concrete")    # Concrete or Steel (add more if needed)
+mat_region_var = StringVar(value="User")      # "User" mimics your manual step
+E_var   = DoubleVar(value=30e9)               # Elastic modulus [Pa]
+nu_var  = DoubleVar(value=0.20)               # Poisson's ratio
+alpha_var = DoubleVar(value=1.0e-5)           # Thermal coeff [1/°C]
+gamma_var_mat = DoubleVar(value=24000.0)      # Unit weight [N/m^3] (Concrete ~24 kN/m³)
+
 # ---------------- Load Schematic Image ---------------- #
 img_path = os.path.join(base_path, 'Geometry.png')
 if os.path.exists(img_path):
