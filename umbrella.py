@@ -102,27 +102,41 @@ if os.path.exists(img_path):
     except Exception:
         pass
 
-# --- Soil sweep section header ---
-Label(root, text='Soil pressure sweep', font=font_head)\
-    .grid(sticky=W, row=10, column=0, columnspan=2, pady=(6,2))
+# --- Soil sweep section (self-contained frame) ---
+soil_frame = Frame(root)
+soil_frame.grid(row=10, column=0, columnspan=3, sticky="we", pady=(6, 8))
 
-# --- Soil sweep controls (Section B 2) ) ---
-Label(root, text='Soil Depth Min (m)', font=font_type).grid(sticky=W, row=10, column=0)
-Entry(root, textvariable=depth_min_var, width=10).grid(row=10, column=1)
+Label(soil_frame, text='Soil pressure sweep', font=font_head)\
+    .grid(sticky=W, row=0, column=0, columnspan=2, pady=(0, 6))
 
-Label(root, text='Soil Depth Max (m)', font=font_type).grid(sticky=W, row=11, column=0)
-Entry(root, textvariable=depth_max_var, width=10).grid(row=11, column=1)
+Label(soil_frame, text='Soil Depth Min (m)', font=font_type)\
+    .grid(sticky=W, row=1, column=0)
+Entry(soil_frame, textvariable=depth_min_var, width=10)\
+    .grid(row=1, column=1)
 
-Label(root, text='Depth Step (m)', font=font_type).grid(sticky=W, row=12, column=0)
-Entry(root, textvariable=depth_step_var, width=10).grid(row=12, column=1)
+Label(soil_frame, text='Soil Depth Max (m)', font=font_type)\
+    .grid(sticky=W, row=2, column=0)
+Entry(soil_frame, textvariable=depth_max_var, width=10)\
+    .grid(row=2, column=1)
 
-Label(root, text='γ Soil (N/m³)', font=font_type).grid(sticky=W, row=13, column=0)
-Entry(root, textvariable=gamma_var, width=10).grid(row=13, column=1)
+Label(soil_frame, text='Depth Step (m)', font=font_type)\
+    .grid(sticky=W, row=3, column=0)
+Entry(soil_frame, textvariable=depth_step_var, width=10)\
+    .grid(row=3, column=1)
 
-Label(root, text='Vertical Axis', font=font_type).grid(sticky=W, row=14, column=0)
-OptionMenu(root, axis_var, "X", "Y", "Z").grid(row=14, column=1, sticky="we")
+Label(soil_frame, text='γ Soil (N/m³)', font=font_type)\
+    .grid(sticky=W, row=4, column=0)
+Entry(soil_frame, textvariable=gamma_var, width=10)\
+    .grid(row=4, column=1)
 
-Checkbutton(root, text='Normalize pattern (shape 0..1)', font=font_type, variable=normalize_var).grid(sticky=W, row=15, column=0, columnspan=2, pady=(0,4))
+Label(soil_frame, text='Vertical Axis', font=font_type)\
+    .grid(sticky=W, row=5, column=0)
+OptionMenu(soil_frame, axis_var, "X", "Y", "Z")\
+    .grid(row=5, column=1, sticky="we")
+
+Checkbutton(soil_frame, text='Normalize pattern (shape 0..1)', font=font_type,
+            variable=normalize_var)\
+    .grid(sticky=W, row=6, column=0, columnspan=2, pady=(4, 0))
 
 # ---------------- Run Function ---------------- #
 def run():
