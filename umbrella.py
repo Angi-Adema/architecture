@@ -204,7 +204,7 @@ def run():
         messagebox.showwarning("Selection", "Please select at least one geometry to generate.")
         return
 
-    def generate_and_export(name, nodes, elements):
+    def generate_and_export(name, nodes, elements, areas=None):
         # Build filename & path in Output/
         xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
         filepath = os.path.join(output_dir, xlsx_name)
@@ -305,15 +305,15 @@ def run():
     # Generate each selected geometry and analyze
     if var_hypar.get():
         nodes, elements = hypar(H, Re, Ne, N)
-        generate_and_export("Hypar", nodes, elements)
+        generate_and_export("Hypar", nodes, elements, areas=None)
 
     if var_pyramid.get():
         nodes, elements = pyramid(H, Re, Ne, N)
-        generate_and_export("Pyramid", nodes, elements)
+        generate_and_export("Pyramid", nodes, elements, areas=None)
 
     if var_dome.get():
         nodes, elements = dome(H, Re, Ne, N)
-        generate_and_export("Parabola", nodes, elements)
+        generate_and_export("Parabola", nodes, elements, areas=None)
 
 
 def quit_app():
