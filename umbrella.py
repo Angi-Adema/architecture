@@ -220,6 +220,11 @@ def run():
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
+        # If areas provided, validate against nodes before writing
+        if areas:
+            validate_areas_against_nodes(areas, nodes)
+
+
         with xlsxwriter.Workbook(filepath) as wb:
             ws_nodes = wb.add_worksheet('Nodes')
             for i, row in enumerate(nodes):
