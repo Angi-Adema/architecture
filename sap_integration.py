@@ -183,14 +183,15 @@ def _start_sap2000_v20(visible=True):
     # ---- Set units (guarded). Prefer enum; fallback to numeric 6 for v20 (kN–m–C). ----
     try:
         if hasattr(model, "SetPresentUnits"):
-            if s2k and hasattr(s2k, "eUnits_kN_m_C"):
-                model.SetPresentUnits(s2k.eUnits_kN_m_C)
+            if s2k and hasattr(s2k, "eUnits_N_m_C"):
+                model.SetPresentUnits(s2k.eUnits_N_m_C)
             else:
                 # NOTE: In SAP2000 v20, numeric code 6 = kN–m–C.
-                # Future versions may differ; prefer the enum when available.
-                model.SetPresentUnits(6)
+                # Fallback numeric code for v20 if enum isn't available:
+                # (On many v20 builds: 8 = N–m–C; if wrong on your build, use the enum path above.)
+                model.SetPresentUnits(8)
         else:
-            _log("SetPresentUnits not available on this build; leaving default units.")
+            _log("SetPresentUnits not available;leaving default units.")
     except Exception:
         _log("Unable to set present units; leaving default units.")
 
