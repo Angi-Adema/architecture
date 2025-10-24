@@ -204,7 +204,7 @@ def run():
         messagebox.showwarning("Selection", "Please select at least one geometry to generate.")
         return
 
-    def generate_and_export(name, nodes, elements, areas=areas_data):
+    def generate_and_export(name, nodes, elements, areas=None):
         # Build filename & path in Output/
         xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
         filepath = os.path.join(output_dir, xlsx_name)
@@ -220,7 +220,10 @@ def run():
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
-        # If areas provided, validate against nodes before writing
+        # If areas provided, you may validate them against node names (optional) before writing
+        # if areas:
+        #     validate_areas_against_nodes(areas, nodes)
+
         if areas:
             validate_areas_against_nodes(areas, nodes)
 
