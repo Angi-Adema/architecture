@@ -2,6 +2,7 @@
 
 import os
 import sys
+import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 import xlsxwriter
@@ -192,8 +193,8 @@ def run():
 
     def generate_and_export(name, nodes, elements):
         # Build filename & path in Output/
-        filename = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
-        filepath = os.path.join(output_dir, filename)
+        xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
+        filepath = os.path.join(output_dir, xlsx_name)
 
         # Preview nodes
         fig = plt.figure()
@@ -205,10 +206,6 @@ def run():
         # Write Excel workbook (always closes/saves, even if an error occurs mid-write)
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
-
-        print(f"[Umbrella] Output dir: {output_dir}", flush=True)
-        print(f"[Umbrella] Saving:     {filepath}", flush=True)
-
 
         with xlsxwriter.Workbook(filepath) as wb:
             ws_nodes = wb.add_worksheet('Nodes')
@@ -223,7 +220,18 @@ def run():
                 for j in range(5):
                     val = row[j] if j < len(row) else None
                     ws_elements.write(i, j, val)
-    
+        # After the with-block (after the file is saved)
+        print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
+
+        # Open the folder automatically on Windows (optional)
+        try:
+            # if you moved `import subprocess` to the top, this is fine:
+            subprocess.Popen(f'explorer "{output_dir}"')
+            # Alternative that needs no import:
+            # os.startfile(output_dir)
+        except Exception:
+            pass
+
         # Build specs from GUI
         soil_spec = {
             "depth_min": depth_min_var.get(),
@@ -244,8 +252,7 @@ def run():
             "nu":     nu_var.get(),
             "alpha":  alpha_var.get(),
             "gamma":  gamma_var_mat.get(),     # N/m^3
-        }
-
+            }
         # ---- Run SAP2000 analysis on this file ----
         try:
             results = run_sap2000_analysis(
@@ -271,8 +278,6 @@ def run():
             print("\n=== Umbrella caught exception ===\n", flush=True)
             traceback.print_exc()
             messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
-
-            #messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
 
     # Generate each selected geometry and analyze
     if var_hypar.get():
