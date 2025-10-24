@@ -2,6 +2,7 @@
 
 import os
 import sys
+import socket
 import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +21,18 @@ os.environ.setdefault("LM_LICENSE_FILE", "27000@pceasapp965.ucdenver.pvt")
 
 # SAP2000 integration
 from sap_integration import run_sap2000_analysis
+
+# Reminder to login to VPN if not connected
+def check_vpn_connection(host="pceasapp965.ucdenver.pvt", port=27000, timeout=3):
+    """
+    Try to connect to the SAP2000 license server to confirm VPN access.
+    Returns True if reachable, False if not.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 # ---------------- Setup Paths (dev & PyInstaller) ---------------- #
 if getattr(sys, 'frozen', False):
