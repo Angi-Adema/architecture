@@ -227,12 +227,22 @@ def run():
                 ws_nodes.write(i, 3, row[1])  # X
                 ws_nodes.write(i, 4, row[2])  # Y
                 ws_nodes.write(i, 6, row[3])  # Z
+            
+            # Elements (frames/lines)
             ws_elements = wb.add_worksheet('Elements')
             for i, row in enumerate(elements):
                 # Expecting 5 cols: Frame, I, J, Section?, Material?
                 for j in range(5):
                     val = row[j] if j < len(row) else None
                     ws_elements.write(i, j, val)
+            
+            # Areas (shells/surfaces)
+            if areas:
+                ws_areas = wb.add_worksheet('Areas')
+                for i, row in enumerate(areas):
+                    for j, val in enumerate(row):
+                        ws_areas.write(i, j, val)
+
         # After the with-block (after the file is saved)
         print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
 
