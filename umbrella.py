@@ -375,6 +375,14 @@ Button(root, text='Run', width=18, height=2, command=run).grid(row=6, column=2, 
 Button(root, text='Quit', width=18, height=2, command=quit_app)\
     .grid(row=9, column=2, pady=(8, 0), padx=(12, 0))
 
+# ---------------- VPN / License Pre-Check ---------------- #
+if not check_vpn_connection():
+    messagebox.showerror(
+        "VPN Required",
+        "Could not reach the CU Denver SAP2000 license server.\n"
+        "Please connect to the CU VPN before running Umbrella."
+    )
+    sys.exit(1)
 
 # ---------------- Launch ---------------- #
 root.mainloop()
