@@ -206,6 +206,10 @@ def run():
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
+        print(f"[Umbrella] Output dir: {output_dir}", flush=True)
+        print(f"[Umbrella] Saving:     {filepath}", flush=True)
+
+
         with xlsxwriter.Workbook(filepath) as wb:
             ws_nodes = wb.add_worksheet('Nodes')
             for i, row in enumerate(nodes):
