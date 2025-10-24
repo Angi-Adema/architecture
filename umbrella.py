@@ -201,23 +201,24 @@ def run():
         ax.set_xlim([-H, H]); ax.set_ylim([-H, H]); ax.set_zlim([-H, H])
         ax.scatter(nodes[:, 1], nodes[:, 2], nodes[:, 3], color='black')
         plt.tight_layout(); plt.show()
-        # Write Excel workbook
-        wb = xlsxwriter.Workbook(filepath)
 
-        ws_nodes = wb.add_worksheet('Nodes')
-        for i, row in enumerate(nodes):
-            ws_nodes.write(i, 0, row[0])  # Name
-            ws_nodes.write(i, 3, row[1])  # X
-            ws_nodes.write(i, 4, row[2])  # Y
-            ws_nodes.write(i, 6, row[3])  # Z
+        # Write Excel workbook (always closes/saves, even if an error occurs mid-write)
+        print(f"[Umbrella] Output directory: {output_dir}", flush=True)
+        print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
-        ws_elements = wb.add_worksheet('Elements')
-        for i, row in enumerate(elements):
-            # Expecting 5 cols: Frame, I, J, Section?, Material?
-            for j in range(5):
-                ws_elements.write(i, j, row[j] if j < len(row) else None)
-
-        wb.close()
+        with xlsxwriter.Workbook(filepath) as wb:
+            ws_nodes = wb.add_worksheet('Nodes')
+            for i, row in enumerate(nodes):
+                ws_nodes.write(i, 0, row[0])  # Name
+                ws_nodes.write(i, 3, row[1])  # X
+                ws_nodes.write(i, 4, row[2])  # Y
+                ws_nodes.write(i, 6, row[3])  # Z
+            ws_elements = wb.add_worksheet('Elements')
+            for i, row in enumerate(elements):
+                # Expecting 5 cols: Frame, I, J, Section?, Material?
+                for j in range(5):
+                    val = row[j] if j < len(row) else None
+                    ws_elements.write(i, j, val)
     
         # Build specs from GUI
         soil_spec = {
