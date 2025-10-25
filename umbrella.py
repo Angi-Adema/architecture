@@ -33,6 +33,19 @@ def check_vpn_connection(host="pceasapp965.ucdenver.pvt", port=27000, timeout=3)
             return True
     except OSError:
         return False
+    
+def validate_areas_against_nodes(areas, nodes):
+    """Ensure P1..P4 (if given) are valid node names from the Nodes sheet."""
+    if not areas:
+        return
+    node_names = {str(r[0]) for r in nodes}  # Nodes rows: [Name, X, Y, Z]
+    for idx, row in enumerate(areas, start=1):
+        # row = [AreaName, P1, P2, P3, P4?, Section?, Material?]
+        for p in row[1:5]:  # P1..P4
+            if p in (None, ""):
+                continue
+            if str(p) not in node_names:
+                raise ValueError(f"Areas row {idx}: point '{p}' not found in Nodes.")
 
 # ---------------- Setup Paths (dev & PyInstaller) ---------------- #
 if getattr(sys, 'frozen', False):
@@ -223,7 +236,6 @@ def run():
         # If areas provided, you may validate them against node names (optional) before writing
         # if areas:
         #     validate_areas_against_nodes(areas, nodes)
-
         if areas:
             validate_areas_against_nodes(areas, nodes)
 
