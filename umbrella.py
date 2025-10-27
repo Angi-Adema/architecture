@@ -16,6 +16,9 @@ from src.dome import dome
 from src.hypar import hypar
 from src.pyramid import pyramid
 
+# Global handle for last preview figure
+LAST_FIG = None  
+
 # Set license env var BEFORE importing sap_integration
 os.environ.setdefault("LM_LICENSE_FILE", "27000@pceasapp965.ucdenver.pvt")
 
@@ -201,8 +204,6 @@ Checkbutton(soil_frame, text='Normalize pattern (shape 0..1)', font=font_type,
             variable=normalize_var)\
     .grid(sticky=W, row=6, column=0, columnspan=2, pady=(4, 0))
 
-# Quit Matplotlib preview window if "X" clicked
-master_window.protocol("WM_DELETE_WINDOW", quit_app)
 
 def _unpack_geometry(ret):
     """
@@ -237,10 +238,10 @@ def run():
         xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
         filepath = os.path.join(output_dir, xlsx_name)
 
-        # --- (A) Close any previous preview to keep memory low ---
-        prev = getattr(generate_and_export, "_last_fig", None)
-        if prev is not None and plt.fignum_exists(prev.number):
-            plt.close(prev)
+        # --- Close any previous preview to keep memory low ---
+        global LAST_FIG
+        if LAST_FIG is not None and plt.fignum_exists(LAST_FIG.number):
+            plt.close(LAST_FIG)
 
         # Preview nodes
         fig = plt.figure()
@@ -252,7 +253,8 @@ def run():
         plt.pause(0.1)
 
         # Remember this figure so we can close it next time
-        generate_and_export._last_fig = fig
+        global LAST_FIG
+        LAST_FIG = fig
 
         # Write Excel workbook (always closes/saves, even if an error occurs mid-write)
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
@@ -385,7 +387,8 @@ def quit_app():
 
     # Clear the last-figure handle used by generate_and_export (harmless if not set)
     try:
-        generate_and_export._last_fig = None
+        global LAST_FIG
+        LAST_FIG = None
     except Exception:
         pass
 
@@ -445,6 +448,9 @@ Button(root, text='Run', width=18, height=2, command=run).grid(row=6, column=2, 
 # Quit button
 Button(root, text='Quit', width=18, height=2, command=quit_app)\
     .grid(row=9, column=2, pady=(8, 0), padx=(12, 0))
+
+# Quit Matplotlib preview window if "X" clicked
+master_window.protocol("WM_DELETE_WINDOW", quit_app)
 
 # ---------------- VPN / License Pre-Check ---------------- #
 if not check_vpn_connection():
