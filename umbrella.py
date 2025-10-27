@@ -253,7 +253,6 @@ def run():
         plt.pause(0.1)
 
         # Remember this figure so we can close it next time
-        global LAST_FIG
         LAST_FIG = fig
 
         # Write Excel workbook (always closes/saves, even if an error occurs mid-write)
