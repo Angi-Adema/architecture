@@ -201,6 +201,18 @@ Checkbutton(soil_frame, text='Normalize pattern (shape 0..1)', font=font_type,
             variable=normalize_var)\
     .grid(sticky=W, row=6, column=0, columnspan=2, pady=(4, 0))
 
+def _unpack_geometry(ret):
+    """
+    Accepts either (nodes, elements) or (nodes, elements, areas_data)
+    and always returns (nodes, elements, areas_data_or_None).
+    """
+    if isinstance(ret, (list, tuple)) and len(ret) == 3:
+        return ret[0], ret[1], ret[2]
+    elif isinstance(ret, (list, tuple)) and len(ret) == 2:
+        return ret[0], ret[1], None
+    else:
+        raise ValueError("Geometry function must return (nodes, elements) or (nodes, elements, areas_data).")
+
 # ---------------- Run Function ---------------- #
 def run():
     # Validate inputs
@@ -324,15 +336,18 @@ def run():
 
     # Generate each selected geometry and analyze
     if var_hypar.get():
-        nodes, elements, areas_data = hypar(H, Re, Ne, N)
+        ret = hypar(H, Re, Ne, N)
+        nodes, elements, areas_data = _unpack_geometry(ret)
         generate_and_export("Hypar", nodes, elements, areas=areas_data)
 
     if var_pyramid.get():
-        nodes, elements, areas_data = pyramid(H, Re, Ne, N)
+        ret = pyramid(H, Re, Ne, N)
+        nodes, elements, areas_data = _unpack_geometry(ret)
         generate_and_export("Pyramid", nodes, elements, areas=areas_data)
 
     if var_dome.get():
-        nodes, elements, areas_data = dome(H, Re, Ne, N)
+        ret = dome(H, Re, Ne, N)
+        nodes, elements, areas_data = _unpack_geometry(ret)
         generate_and_export("Parabola", nodes, elements, areas=areas_data)
 
 
