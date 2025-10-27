@@ -365,7 +365,7 @@ def quit_app():
 
     # Try the API paths that DO NOT launch a new instance
     try:
-        import time, subprocess
+        import time
         import comtypes.client as cc
 
         # 1) Attach via ROT (running object table)
