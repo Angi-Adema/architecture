@@ -234,12 +234,22 @@ def run():
         xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
         filepath = os.path.join(output_dir, xlsx_name)
 
+        # --- (A) Close any previous preview to keep memory low ---
+        prev = getattr(generate_and_export, "_last_fig", None)
+        if prev is not None and plt.fignum_exists(prev.number):
+            plt.close(prev)
+
         # Preview nodes
         fig = plt.figure()
         ax = fig.add_subplot(111, projection='3d')
         ax.set_xlim([-H, H]); ax.set_ylim([-H, H]); ax.set_zlim([-H, H])
         ax.scatter(nodes[:, 1], nodes[:, 2], nodes[:, 3], color='black')
-        plt.tight_layout(); plt.show()
+        plt.tight_layout()
+        plt.show(block=False)
+        plt.pause(0.1)
+
+        # Remember this figure so we can close it next time
+        generate_and_export._last_fig = fig
 
         # Write Excel workbook (always closes/saves, even if an error occurs mid-write)
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
