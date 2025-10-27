@@ -244,16 +244,19 @@ def run():
             plt.close(LAST_FIG)
 
         # Preview nodes
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        ax.set_xlim([-H, H]); ax.set_ylim([-H, H]); ax.set_zlim([-H, H])
-        ax.scatter(nodes[:, 1], nodes[:, 2], nodes[:, 3], color='black')
-        plt.tight_layout()
-        plt.show(block=False)
-        plt.pause(0.1)
+        try:
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            ax.set_xlim([-H, H]); ax.set_ylim([-H, H]); ax.set_zlim([-H, H])
+            ax.scatter(nodes[:, 1], nodes[:, 2], nodes[:, 3], color='black')
+            plt.tight_layout()
+            plt.show(block=False)
+            plt.pause(0.1)
+            # Remember this figure so we can close it next time
+            LAST_FIG = fig
+        except Exception as _e:
+            LAST_FIG = None # skip preview if backend can't show it
 
-        # Remember this figure so we can close it next time
-        LAST_FIG = fig
 
         # Write Excel workbook (always closes/saves, even if an error occurs mid-write)
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
