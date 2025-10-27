@@ -201,6 +201,9 @@ Checkbutton(soil_frame, text='Normalize pattern (shape 0..1)', font=font_type,
             variable=normalize_var)\
     .grid(sticky=W, row=6, column=0, columnspan=2, pady=(4, 0))
 
+# Quit Matplotlib preview window if "X" clicked
+master_window.protocol("WM_DELETE_WINDOW", quit_app)
+
 def _unpack_geometry(ret):
     """
     Accepts either (nodes, elements) or (nodes, elements, areas_data)
@@ -372,6 +375,19 @@ def quit_app():
         pass
 
     closed = False
+
+    # Close any Matplotlib preview windows
+    try:
+        import matplotlib.pyplot as plt
+        plt.close('all')
+    except Exception:
+        pass
+
+    # Clear the last-figure handle used by generate_and_export (harmless if not set)
+    try:
+        generate_and_export._last_fig = None
+    except Exception:
+        pass
 
     # Try the API paths that DO NOT launch a new instance
     try:
