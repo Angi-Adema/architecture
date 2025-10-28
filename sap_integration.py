@@ -332,50 +332,100 @@ def _mat_code_from_name(name: str, default: int = 2) -> int:
 
 def _build_model_from_excel(model, nodes_df, elems_df,
                             default_section=("RECT_300x500", "CONC40", (0.30, 0.50))):
-    """Create points and frames using spreadsheet names."""
+    """
+    Create points and frames in SAP2000 from the provided dataframes.
+
+    nodes_df columns (no headers in file; normalized before here): Name, X, Y, Z
+
+    elems_df columns (no headers in file; normalized before here): Frame, I, J, Section (opt), Material (opt)
+
+    default_section: (section_name, material_name, (b, h))
+    """
     sec_name, mat_name, dims = default_section
     _ensure_default_section(model, sec_name, mat_name, dims)
 
-    # Points
+    # -- helper: robust existence check for a point across API variants
+    def _point_exists(pt_name: str) -> bool:
+        try:
+            model.PointObj.GetCoordCartesian(pt_name, "Global")
+            return True
+        except Exception:
+            try:
+                model.PointObj.GetCoordCartesian(pt_name)
+                return True
+            except Exception:
+                return False
+
+    # ----- Points -----
     for _, r in nodes_df.iterrows():
         name, x, y, z = r["Name"], r["X"], r["Y"], r["Z"]
         try:
-            model.PointObj.AddCartesian(x, y, z, str(name))
+            model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
         except Exception:
-            pass  # likely duplicate
+            # Likely duplicate; safe to continue
+            pass
 
-    # Frames
-    b, h = dims
+    # ----- Frames -----
+    b, h = map(float, dims)
     for _, r in elems_df.iterrows():
-        fname = str(r["Frame"])
-        i_pt = str(r["I"])
-        j_pt = str(r["J"])
-        sec  = str(r["Section"])  if pd.notna(r["Section"])  else sec_name
-        mat  = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
+        fname = str(r["Frame"]).strip()
+        i_pt  = str(r["I"]).strip()
+        j_pt  = str(r["J"]).strip()
 
-        # If a material is specified in the sheet, make sure it exists
+        raw_sec = str(r["Section"])  if pd.notna(r["Section"])  else sec_name
+        raw_mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
+        sec = (raw_sec or "").strip() or sec_name
+        mat = (raw_mat or "").strip() or mat_name
+
+        # Guards
+        if not fname:
+            raise RuntimeError(f"Elements sheet has a frame with empty name (I={i_pt}, J={j_pt}).")
+        if i_pt == j_pt:
+            raise RuntimeError(f"Frame '{fname}' has identical I and J points: {i_pt}.")
+
+        # Ensure material if explicitly provided in the sheet
         if pd.notna(r["Material"]):
             try:
-                # Common signature: SetMaterial(name, type)  (1=Steel, 2=Concrete)
-                model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))
+                model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))  # 1=Steel, 2=Concrete
             except Exception:
                 try:
-                    # Fallback overload with region
                     model.PropMaterial.SetMaterial_1(mat, "User", "", "")
                 except Exception:
-                    pass  # ok if it already exists or other versions
+                    pass  # fine if already defined
 
-        # Ensure/define the section (rectangle b x h) with that material
+        # Ensure the rectangular section exists (b, h in meters)
         try:
-            model.PropFrame.SetRectangle(sec, mat, float(b), float(h))
+            model.PropFrame.SetRectangle(sec, mat, b, h)
+        except Exception:
+            pass  # fine if already exists
+
+        # Replace-if-exists behavior to avoid AddByPoint failing on name collision
+        try:
+            model.FrameObj.Delete(fname)
         except Exception:
             pass
-        
-        # Add the frame element by point names
+
+        # Points must exist
+        if not _point_exists(i_pt) or not _point_exists(j_pt):
+            raise RuntimeError(
+                f"Point '{i_pt}' or '{j_pt}' not found before creating frame '{fname}'."
+            )
+
+        # Create frame: Name=fname, PropName=sec, CSys="Global"
         try:
-            model.FrameObj.AddByPoint(i_pt, j_pt, sec, fname, "Global")
+            model.FrameObj.AddByPoint(i_pt, j_pt, fname, sec, "Global")
         except Exception as e:
             raise RuntimeError(f"Failed to create frame {fname} ({i_pt}->{j_pt}): {e}")
+
+        # Ensure property applied (covers odd builds)
+        try:
+            model.FrameObj.SetProperty(fname, sec)
+        except Exception:
+            try:
+                model.FrameObj.SetSection(fname, sec)
+            except Exception:
+                pass
+
         
 def _build_areas_from_excel(model, areas_df,
                             default_section=("SHELL_200", "CONC40", 0.20)):
