@@ -234,6 +234,10 @@ def run():
         return
 
     def generate_and_export(name, nodes, elements, areas=None):
+        # Coerce to arrays so nodes[:, 1] etc. works even if lists were returned. No need to coerce areas as iterating and writing works fine as a list of lists.
+        nodes = np.asarray(nodes, dtype=object)  # first col is name (str), others are numbers
+        elements = np.asarray(elements, dtype=object)  # mixed types are okay here
+
         # Build filename & path in Output/
         xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
         filepath = os.path.join(output_dir, xlsx_name)
@@ -246,13 +250,14 @@ def run():
         # Preview nodes
         try:
             fig = plt.figure()
+            fig.canvas.manager.set_window_title(f"Preview: {name}   ")
             ax = fig.add_subplot(111, projection='3d')
             ax.set_xlim([-H, H]); ax.set_ylim([-H, H]); ax.set_zlim([-H, H])
             ax.scatter(nodes[:, 1], nodes[:, 2], nodes[:, 3], color='black')
             plt.tight_layout()
             plt.show(block=False)
             plt.pause(0.1)
-            # Remember this figure so we can close it next time
+            # remember this figure for later cleanup
             LAST_FIG = fig
         except Exception as _e:
             LAST_FIG = None # skip preview if backend can't show it
@@ -265,8 +270,12 @@ def run():
         # If areas provided, you may validate them against node names (optional) before writing
         # if areas:
         #     validate_areas_against_nodes(areas, nodes)
-        if areas:
-            validate_areas_against_nodes(areas, nodes)
+        try:
+            if areas:
+                validate_areas_against_nodes(areas, nodes)
+        except ValueError as e:
+            messagebox.showerror("Areas validation", str(e))
+            return
 
 
         with xlsxwriter.Workbook(filepath) as wb:
