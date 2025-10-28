@@ -217,6 +217,14 @@ def _unpack_geometry(ret):
     else:
         raise ValueError("Geometry function must return (nodes, elements) or (nodes, elements, areas_data).")
 
+def _has_plottable_nodes(nodes) -> bool:
+    try:
+        arr = np.asarray(nodes, dtype=object)
+        xyz = np.asarray(arr[:, 1:4], dtype=float)  # X,Y,Z
+        return np.isfinite(xyz).all(axis=1).any()
+    except Exception:
+        return False
+
 # ---------------- Run Function ---------------- #
 def run():
     # Validate inputs
@@ -229,14 +237,29 @@ def run():
         messagebox.showerror("Input Error", "Please enter valid numerical values.")
         return
 
+    # Basic guards
+    if Ne < 3:
+        messagebox.showerror("Input Error", "Number of sides (Ne) must be ≥ 3.")
+        return
+    if H <= 0:
+        messagebox.showerror("Input Error", "Apothem length H must be > 0.")
+        return
+    if N < 1:
+        messagebox.showerror("Input Error", "Elements along apothem (N) must be ≥ 1.")
+        return
+    if Re < 0:
+        messagebox.showerror("Input Error", "Rise (Re) must be ≥ 0.")
+        return
+
     if not (var_hypar.get() or var_pyramid.get() or var_dome.get()):
         messagebox.showwarning("Selection", "Please select at least one geometry to generate.")
         return
 
+    # --- define the helper used below, AFTER inputs so it can use H/Ne/Re/N ---
     def generate_and_export(name, nodes, elements, areas=None):
-        # Coerce to arrays so nodes[:, 1] etc. works even if lists were returned. No need to coerce areas as iterating and writing works fine as a list of lists.
-        nodes = np.asarray(nodes, dtype=object)  # first col is name (str), others are numbers
-        elements = np.asarray(elements, dtype=object)  # mixed types are okay here
+        # Coerce to arrays so nodes[:, 1] etc. works even if lists were returned.
+        nodes_arr = np.asarray(nodes, dtype=object)      # [Name, X, Y, Z]
+        elements_arr = np.asarray(elements, dtype=object)
 
         # Build filename & path in Output/
         xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
@@ -247,69 +270,67 @@ def run():
         if LAST_FIG is not None and plt.fignum_exists(LAST_FIG.number):
             plt.close(LAST_FIG)
 
-        # Preview nodes
+        # Preview nodes (robust to NaN/Inf/str)
         try:
+            # Coerce XYZ to float and drop any bad rows
+            xyz = np.asarray(nodes_arr[:, 1:4], dtype=float)  # X,Y,Z
+            mask = np.isfinite(xyz).all(axis=1)
+            if not mask.any():
+                raise ValueError("No plottable nodes (all rows are NaN/Inf).")
+            xyz = xyz[mask]
+
             fig = plt.figure()
-            fig.canvas.manager.set_window_title(f"Preview: {name}   ")
+            try:
+                fig.canvas.manager.set_window_title(f"Preview: {name}")
+            except Exception:
+                pass
             ax = fig.add_subplot(111, projection='3d')
-            ax.set_xlim([-H, H]); ax.set_ylim([-H, H]); ax.set_zlim([-H, H])
-            ax.scatter(nodes[:, 1], nodes[:, 2], nodes[:, 3], color='black')
+            lim = abs(H)
+            ax.set_xlim([-lim, lim]); ax.set_ylim([-lim, lim]); ax.set_zlim([-lim, lim])
+            ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2])
             plt.tight_layout()
             plt.show(block=False)
             plt.pause(0.1)
-            # remember this figure for later cleanup
             LAST_FIG = fig
-        except Exception as _e:
-            LAST_FIG = None # skip preview if backend can't show it
+        except Exception:
+            LAST_FIG = None  # skip preview if anything goes wrong
 
-
-        # Write Excel workbook (always closes/saves, even if an error occurs mid-write)
+        # Write Excel workbook (treat NaN/Inf as Excel errors)
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
-        # If areas provided, you may validate them against node names (optional) before writing
-        # if areas:
-        #     validate_areas_against_nodes(areas, nodes)
         try:
             if areas:
-                validate_areas_against_nodes(areas, nodes)
+                validate_areas_against_nodes(areas, nodes_arr)
         except ValueError as e:
             messagebox.showerror("Areas validation", str(e))
             return
 
-
-        with xlsxwriter.Workbook(filepath) as wb:
+        with xlsxwriter.Workbook(filepath, {'nan_inf_to_errors': True}) as wb:
             ws_nodes = wb.add_worksheet('Nodes')
-            for i, row in enumerate(nodes):
+            for i, row in enumerate(nodes_arr):
                 ws_nodes.write(i, 0, row[0])  # Name
                 ws_nodes.write(i, 3, row[1])  # X
                 ws_nodes.write(i, 4, row[2])  # Y
                 ws_nodes.write(i, 6, row[3])  # Z
-            
-            # Elements (frames/lines)
+
             ws_elements = wb.add_worksheet('Elements')
-            for i, row in enumerate(elements):
-                # Expecting 5 cols: Frame, I, J, Section?, Material?
-                for j in range(5):
+            for i, row in enumerate(elements_arr):
+                for j in range(5):  # Frame, I, J, Section, Material
                     val = row[j] if j < len(row) else None
                     ws_elements.write(i, j, val)
-            
-            # Areas (shells/surfaces)
+
             if areas:
                 ws_areas = wb.add_worksheet('Areas')
                 for i, row in enumerate(areas):
                     for j, val in enumerate(row):
                         ws_areas.write(i, j, val)
 
-        # After the with-block (after the file is saved)
         print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
 
         # Open the folder automatically on Windows (optional)
         try:
-            # if you moved `import subprocess` to the top, this is fine:
             subprocess.Popen(f'explorer "{output_dir}"')
-            # Alternative that needs no import:
-            # os.startfile(output_dir)
         except Exception:
             pass
 
@@ -333,7 +354,8 @@ def run():
             "nu":     nu_var.get(),
             "alpha":  alpha_var.get(),
             "gamma":  gamma_var_mat.get(),     # N/m^3
-            }
+        }
+
         # ---- Run SAP2000 analysis on this file ----
         try:
             results = run_sap2000_analysis(
@@ -360,21 +382,33 @@ def run():
             traceback.print_exc()
             messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
 
-    # Generate each selected geometry and analyze
+    # -------- generate each selected geometry and analyze (non-blocking) --------
     if var_hypar.get():
         ret = hypar(H, Re, Ne, N)
         nodes, elements, areas_data = _unpack_geometry(ret)
-        generate_and_export("Hypar", nodes, elements, areas=areas_data)
+        if not _has_plottable_nodes(nodes):
+            messagebox.showerror("Geometry error",
+                             "Hypar produced no valid XYZ coordinates. Check inputs.")
+        else:
+            generate_and_export("Hypar", nodes, elements, areas=areas_data)
 
     if var_pyramid.get():
         ret = pyramid(H, Re, Ne, N)
         nodes, elements, areas_data = _unpack_geometry(ret)
-        generate_and_export("Pyramid", nodes, elements, areas=areas_data)
+        if not _has_plottable_nodes(nodes):
+            messagebox.showerror("Geometry error",
+                             "Pyramid produced no valid XYZ coordinates. Check inputs.")
+        else:
+            generate_and_export("Pyramid", nodes, elements, areas=areas_data)
 
     if var_dome.get():
         ret = dome(H, Re, Ne, N)
         nodes, elements, areas_data = _unpack_geometry(ret)
-        generate_and_export("Parabola", nodes, elements, areas=areas_data)
+        if not _has_plottable_nodes(nodes):
+            messagebox.showerror("Geometry error",
+                                 "Dome produced no valid XYZ coordinates. Check inputs.")
+        else:
+            generate_and_export("Dome", nodes, elements, areas=areas_data)
 
 
 def quit_app():
