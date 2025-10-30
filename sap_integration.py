@@ -6,6 +6,7 @@
 
 import importlib
 import os
+import math
 import pandas as pd
 import comtypes.client as cc
 
@@ -631,6 +632,188 @@ def _get_all_area_names(model):
                 return [names]
         except Exception:
             return []
+        
+def _get_joint_xyz(model, joint_name):
+    try:
+        _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name), "Global")
+    except Exception:
+        _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name))
+    return float(x), float(y), float(z)
+
+def _autodetect_orientation_joints(model, vertical_axis="Z"):
+    """
+    Returns (apex_name, behind_name) where:
+      - apex_name  = joint with the maximum coordinate along 'vertical_axis'
+      - behind_name = nearest joint to the apex in the horizontal plane
+                      (XY if axis=Z, XZ if axis=Y, YZ if axis=X),
+                      with strictly lower 'vertical_axis' coordinate
+    """
+    ax = vertical_axis.upper()
+    if ax not in ("X", "Y", "Z"):
+        ax = "Z"
+
+    # Gather all joints with coordinates
+    joints = list(_iter_all_point_coords(model))
+    if not joints:
+        return None, None
+
+    # Choose index and horizontal components
+    if ax == "Z":
+        axis_index = 2
+        horiz_idx = (0, 1)  # X, Y
+    elif ax == "Y":
+        axis_index = 1
+        horiz_idx = (0, 2)  # X, Z
+    else:  # "X"
+        axis_index = 0
+        horiz_idx = (1, 2)  # Y, Z
+
+    # Apex = max along vertical axis
+    apex = max(joints, key=lambda t: (t[1], t[2], t[3])[axis_index])  # (name,x,y,z); using tuple view
+    apex_name, ax_x, ax_y, ax_z = apex
+    apex_vert = (ax_x, ax_y, ax_z)[axis_index]
+    ax_h1 = (ax_x, ax_y, ax_z)[horiz_idx[0]]
+    ax_h2 = (ax_x, ax_y, ax_z)[horiz_idx[1]]
+
+    # Among joints strictly below apex along vertical axis,
+    # pick the one closest in the horizontal plane.
+    candidates = []
+    for nm, x, y, z in joints:
+        if nm == apex_name:
+            continue
+        vert = (x, y, z)[axis_index]
+        if vert >= apex_vert - 1e-12:
+            continue  # must be "behind" (lower) than apex
+        h1 = (x, y, z)[horiz_idx[0]]
+        h2 = (x, y, z)[horiz_idx[1]]
+        dh = math.hypot(h1 - ax_h1, h2 - ax_h2)
+        candidates.append((dh, nm))
+
+    if not candidates:
+        # Fallback: second-highest along vertical axis
+        others = [t for t in joints if t[0] != apex_name]
+        if not others:
+            return apex_name, None
+        behind_name = max(others, key=lambda t: (t[1], t[2], t[3])[axis_index])[0]
+        return apex_name, behind_name
+
+    behind_name = min(candidates)[1]
+    return apex_name, behind_name
+
+def _rename_point(model, old_name, new_name):
+    """
+    Renames a point to new_name, handling the case where new_name already exists.
+    """
+    if not old_name or not new_name or old_name == new_name:
+        return new_name
+
+    try:
+        # If target doesn't exist, simple rename
+        model.PointObj.ChangeName(str(old_name), str(new_name))
+        return new_name
+    except Exception:
+        # If new_name exists, swap via a temporary name
+        tmp = f"{new_name}__tmp__"
+        try:
+            model.PointObj.ChangeName(str(new_name), tmp)
+        except Exception:
+            pass
+        try:
+            model.PointObj.ChangeName(str(old_name), str(new_name))
+            # try to clean up tmp -> old_name (optional)
+            try:
+                model.PointObj.ChangeName(tmp, str(old_name))
+            except Exception:
+                pass
+            return new_name
+        except Exception:
+            # If all else fails, keep old_name
+            return old_name
+
+def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True):
+    """
+    Emulates UI: Assign > Area > Local Axes... > Specify Advanced Local Axes
+    Plane ≈ 3-1, Two Joints = (joint1, joint2).
+    Tries advanced API variants, falls back to a 2D rotation (in horizontal plane).
+    """
+    area = model.AreaObj
+    names = _get_all_area_names(model)
+    if not names:
+        return
+
+    for an in names:
+        # 1) Try advanced variants first
+        for meth in ("SetLocalAxesAdvanced", "SetLocalAxes_2", "SetLocalAxesByPoints"):
+            try:
+                m = getattr(area, meth)
+                plane_code = 3  # maps to "Plane 3-1" on many v20 builds
+                if meth == "SetLocalAxesAdvanced":
+                    axis_dir = 1  # define local-1 by the vector (j1->j2)
+                    m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
+                elif meth == "SetLocalAxesByPoints":
+                    m(an, plane_code, str(joint1), str(joint2), bool(replace))
+                else:
+                    axis_dir = 1
+                    m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
+                break  # done for this area
+            except Exception:
+                continue
+        else:
+            # 2) Fallback: rotate axes to align with projection of j1->j2 in XY
+            try:
+                x1, y1, _ = _get_joint_xyz(model, joint1)
+                x2, y2, _ = _get_joint_xyz(model, joint2)
+                angle_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
+                try:
+                    area.SetLocalAxes(an, float(angle_deg))
+                except Exception:
+                    area.SetLocalAxes(an, float(angle_deg), "Global")
+            except Exception:
+                pass
+
+
+def _get_joint_xyz(model, joint_name):
+    try:
+        _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name), "Global")
+    except Exception:
+        _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name))
+    return float(x), float(y), float(z)
+
+def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True):
+    area = model.AreaObj
+    names = _get_all_area_names(model)
+    if not names:
+        return
+
+    for an in names:
+        # Try advanced API variants first
+        for meth in ("SetLocalAxesAdvanced", "SetLocalAxes_2", "SetLocalAxesByPoints"):
+            try:
+                m = getattr(area, meth)
+                plane_code = 3  # best guess for “Plane 3-1” on many v20 builds
+                if meth == "SetLocalAxesAdvanced":
+                    axis_dir = 1  # define local-1 by the vector
+                    m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
+                elif meth == "SetLocalAxesByPoints":
+                    m(an, plane_code, str(joint1), str(joint2), bool(replace))
+                else:
+                    axis_dir = 1
+                    m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
+                break  # done for this area
+            except Exception:
+                continue
+        else:
+            # Fallback: rotate local axes by angle of the j1->j2 vector projected to XY
+            try:
+                x1, y1, _ = _get_joint_xyz(model, joint1)
+                x2, y2, _ = _get_joint_xyz(model, joint2)
+                angle_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
+                try:
+                    area.SetLocalAxes(an, float(angle_deg))
+                except Exception:
+                    area.SetLocalAxes(an, float(angle_deg), "Global")
+            except Exception:
+                pass
 
 
 def _ensure_joint_pattern_exists(model, pattern_name="SOIL_DEPTH"):
@@ -923,6 +1106,27 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 model, areas,
                 default_section=("SHELL_200", default_mat, 0.20)
             )
+            # --- AUTO-DETECT + LABEL + ORIENT ---
+            try:
+                # Detect apex (farthest upward) and its nearest “behind” joint
+                apex, behind = _autodetect_orientation_joints(model, vertical_axis="Z")
+                if apex:
+                    # Relabel to "1" and "23" per your manual convention
+                    apex = _rename_point(model, apex, "1")
+                if behind:
+                    behind = _rename_point(model, behind, "23")
+                # If both exist, set area local axes using those two joints
+                if apex and behind:
+                    _set_area_axes_by_two_joints(model, joint1=apex, joint2=behind, plane="31", replace=True)
+            except Exception:
+                # Non-fatal: keep going even if orientation fails
+                pass
+            
+            # Orient areas like the UI step (Plane 3-1, Two Joints 1 & 23)
+            try:
+                _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True)
+            except Exception:
+                pass
 
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
