@@ -104,7 +104,7 @@ var_dome    = IntVar()
 
 Checkbutton(root, text='Generate hypar tympan',     font=font_type, variable=var_hypar).grid(   sticky=W, row=6, column=0, columnspan=2)
 Checkbutton(root, text='Generate pyramidal tympan', font=font_type, variable=var_pyramid).grid( sticky=W, row=7, column=0, columnspan=2)
-Checkbutton(root, text='Generate parabolic tympan', font=font_type, variable=var_dome).grid(    sticky=W, row=8, column=0, columnspan=2)
+Checkbutton(root, text='Generate dome tympan', font=font_type, variable=var_dome).grid(    sticky=W, row=8, column=0, columnspan=2)
 
 # SAP2000 behavior toggles
 var_autoclose = IntVar(value=0)   # 0 = keep SAP open after run; 1 = auto-close
@@ -255,6 +255,10 @@ def run():
         messagebox.showwarning("Selection", "Please select at least one geometry to generate.")
         return
 
+    # --- Open Explorer only once per Run click ---
+    opened_dir = False
+
+
     # --- define the helper used below, AFTER inputs so it can use H/Ne/Re/N ---
     def generate_and_export(name, nodes, elements, areas=None):
         # Coerce to arrays so nodes[:, 1] etc. works even if lists were returned.
@@ -328,11 +332,14 @@ def run():
 
         print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
 
-        # Open the folder automatically on Windows (optional)
-        try:
-            subprocess.Popen(f'explorer "{output_dir}"')
-        except Exception:
-            pass
+        # Open the folder automatically on Windows (only once per Run)
+        nonlocal opened_dir
+        if not opened_dir:
+            try:
+                subprocess.Popen(f'explorer "{output_dir}"')
+            except Exception:
+                pass
+            opened_dir = True
 
         # Build specs from GUI
         soil_spec = {
@@ -388,7 +395,7 @@ def run():
         nodes, elements, areas_data = _unpack_geometry(ret)
         if not _has_plottable_nodes(nodes):
             messagebox.showerror("Geometry error",
-                             "Hypar produced no valid XYZ coordinates. Check inputs.")
+                                 "Hypar produced no valid XYZ coordinates. Check inputs.")
         else:
             generate_and_export("Hypar", nodes, elements, areas=areas_data)
 
@@ -397,7 +404,7 @@ def run():
         nodes, elements, areas_data = _unpack_geometry(ret)
         if not _has_plottable_nodes(nodes):
             messagebox.showerror("Geometry error",
-                             "Pyramid produced no valid XYZ coordinates. Check inputs.")
+                                 "Pyramid produced no valid XYZ coordinates. Check inputs.")
         else:
             generate_and_export("Pyramid", nodes, elements, areas=areas_data)
 
