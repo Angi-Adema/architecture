@@ -17,14 +17,17 @@ def _ensure_xlsxwriter():
     except ImportError:
         raise RuntimeError("Please `pip install xlsxwriter` to write results.")
     
+
 def _ensure_openpyxl():
     try:
         import openpyxl  # noqa: F401
     except ImportError:
         raise RuntimeError("Please `pip install openpyxl` to read .xlsx files.")
     
+
 # --- DEBUG SWITCH ---
 DEBUG = True
+
 
 def _log(*a, sep=" ", end="\n"):
     """Lightweight debug logger - only prints when DEBUG is True."""
@@ -41,6 +44,7 @@ DIR_CANDIDATES = [
     r"C:\Program Files\Computers and Structures\SAP2000 20",
 ]
 
+
 def _as_seq(x, n):
     """Coerce COM return 'x' to a sequence of length n.
     Handles singletons (scalar) and SAFEARRAYs that don't support len() cleanly.
@@ -54,6 +58,7 @@ def _as_seq(x, n):
     except Exception:
         # Not iterable -> replicate scalar n times
         return [x] * int(n)
+
 
 def _select_case(model, case):
     try:
@@ -127,27 +132,28 @@ def _start_sap2000_v20(visible=True):
                 # Last resort: launch then attach
                 if not exe_path:
                     raise RuntimeError("Could not locate SAP2000.exe. Update DIR_CANDIDATES.")
-                import time, os as _os
+                import time as _time
+                import os as _os
                 _os.startfile(exe_path)
                 _log("Launched EXE, attaching…")
 
                 for _ in range(20):
-                    time.sleep(1)
+                    _time.sleep(1)
                     try:
                         sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
                         _log("Attached to SAP2000 instance.")
                         break
                     except Exception:
                         pass
-                
+
                 if sap is None:
                     _log("Timed out waiting for SAP2000 to register COM object.")
                     raise RuntimeError("SAP2000 did not register in time after launch.")
 
-    # Fail fast if we still didn't get an object 
+    # Fail fast if we still didn't get an object
     if sap is None:
         raise RuntimeError("Could not obtain CSI.SAP2000.API.SapObject via CreateObject, Helper, or GetActiveObject.")
-    
+
     try:
         _log("SAP2000 version:", sap.GetVersion())  # returns string on many v20 builds
     except Exception:
@@ -181,6 +187,7 @@ def _start_sap2000_v20(visible=True):
         except Exception as e:
             _log(f"NewBlank failed with and without metric flag: {e}")
             raise
+
     # ---- Set units (guarded). Prefer enum; fallback to numeric 6 for v20 (kN–m–C). ----
     try:
         if hasattr(model, "SetPresentUnits"):
@@ -192,7 +199,7 @@ def _start_sap2000_v20(visible=True):
                 # (On many v20 builds: 8 = N–m–C; if wrong on your build, use the enum path above.)
                 model.SetPresentUnits(8)
         else:
-            _log("SetPresentUnits not available;leaving default units.")
+            _log("SetPresentUnits not available; leaving default units.")
     except Exception:
         _log("Unable to set present units; leaving default units.")
 
@@ -218,9 +225,9 @@ def _read_nodes_sheet(xlsx_path):
         name_col, x_col, y_col, z_col = 0, 1, 2, 3
     return pd.DataFrame({
         "Name": df.iloc[:, name_col].astype(str),
-        "X":    df.iloc[:, x_col].astype(float),
-        "Y":    df.iloc[:, y_col].astype(float),
-        "Z":    df.iloc[:, z_col].astype(float),
+        "X": df.iloc[:, x_col].astype(float),
+        "Y": df.iloc[:, y_col].astype(float),
+        "Z": df.iloc[:, z_col].astype(float),
     })
 
 
@@ -235,6 +242,7 @@ def _read_elements_sheet(xlsx_path):
     return df.rename(columns={0: "Frame", 1: "I", 2: "J", 3: "Section", 4: "Material"})[
         ["Frame", "I", "J", "Section", "Material"]
     ]
+
 
 def _read_areas_sheet(xlsx_path):
     """
@@ -271,6 +279,7 @@ def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
     except Exception:
         pass  # ok if already exists
 
+
 def _ensure_material_defined(model, spec):
     """
     Ensure a material exists and has basic properties.
@@ -278,8 +287,8 @@ def _ensure_material_defined(model, spec):
     """
     if not spec:
         return None
-    name   = str(spec.get("name", "CONC40"))
-    mtype  = str(spec.get("type", "Concrete")).strip().lower()
+    name = str(spec.get("name", "CONC40"))
+    mtype = str(spec.get("type", "Concrete")).strip().lower()
     region = str(spec.get("region", "User"))
     # SAP codes: 1=Steel, 2=Concrete (common in v20)
     mat_code = 2 if mtype == "concrete" else 1
@@ -294,10 +303,10 @@ def _ensure_material_defined(model, spec):
             pass  # ok if it already exists
 
     # Convert inputs assuming model units = kN-m-C (as set in _start_sap2000_v20)
-    E_pa   = float(spec.get("E", 30e9))         # Pa (= N/m^2)
-    E_kPa  = E_pa / 1000.0                      # kN/m^2
-    nu     = float(spec.get("nu", 0.2))
-    alpha  = float(spec.get("alpha", 1.0e-5))   # 1/C
+    E_pa = float(spec.get("E", 30e9))         # Pa (= N/m^2)
+    E_kPa = E_pa / 1000.0                     # kN/m^2
+    nu = float(spec.get("nu", 0.2))
+    alpha = float(spec.get("alpha", 1.0e-5))  # 1/C
 
     try:
         model.PropMaterial.SetMPIsotropic(name, E_kPa, nu, alpha)
@@ -317,6 +326,7 @@ def _ensure_material_defined(model, spec):
         pass
 
     return name
+
 
 def _mat_code_from_name(name: str, default: int = 2) -> int:
     """
@@ -370,10 +380,10 @@ def _build_model_from_excel(model, nodes_df, elems_df,
     b, h = map(float, dims)
     for _, r in elems_df.iterrows():
         fname = str(r["Frame"]).strip()
-        i_pt  = str(r["I"]).strip()
-        j_pt  = str(r["J"]).strip()
+        i_pt = str(r["I"]).strip()
+        j_pt = str(r["J"]).strip()
 
-        raw_sec = str(r["Section"])  if pd.notna(r["Section"])  else sec_name
+        raw_sec = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
         raw_mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
         sec = (raw_sec or "").strip() or sec_name
         mat = (raw_mat or "").strip() or mat_name
@@ -427,7 +437,7 @@ def _build_model_from_excel(model, nodes_df, elems_df,
             except Exception:
                 pass
 
-        
+
 def _build_areas_from_excel(model, areas_df,
                             default_section=("SHELL_200", "CONC40", 0.20)):
     """
@@ -498,7 +508,6 @@ def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
         model.PointObj.SetRestraint(n, restr)
 
 
-
 def _add_default_self_weight(model, pattern="Dead", mult=1.0):
     """Create a Dead load pattern with self-weight multiplier."""
     try:
@@ -527,27 +536,32 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
         try:
             ret, nres, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3 = \
                 model.Results.JointDispl(str(nname), 0, case)
-        except Exception as e:
+        except Exception:
             # skip bad node gracefully
             continue
 
-        
-        _log(f"[JointDispl] node={nname!r} -> nres={nres} | "
+        _log(
+            f"[JointDispl] node={nname!r} -> nres={nres} | "
             f"types: Obj={type(Obj).__name__}, U1={type(U1).__name__}, "
-            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, StepNum={type(StepNum).__name__}")
-
+            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, "
+            f"StepNum={type(StepNum).__name__}"
+        )
 
         n = int(nres or 0)
         if n == 0:
             continue
 
         # Coerce possible scalars into sequences of length n
-        Obj      = _as_seq(Obj, n)
+        Obj = _as_seq(Obj, n)
         LoadCase = _as_seq(LoadCase, n)
         StepType = _as_seq(StepType, n)
-        StepNum  = _as_seq(StepNum, n)
-        U1 = _as_seq(U1, n); U2 = _as_seq(U2, n); U3 = _as_seq(U3, n)
-        R1 = _as_seq(R1, n); R2 = _as_seq(R2, n); R3 = _as_seq(R3, n)
+        StepNum = _as_seq(StepNum, n)
+        U1 = _as_seq(U1, n)
+        U2 = _as_seq(U2, n)
+        U3 = _as_seq(U3, n)
+        R1 = _as_seq(R1, n)
+        R2 = _as_seq(R2, n)
+        R3 = _as_seq(R3, n)
 
         for i in range(n):
             rows.append({
@@ -574,22 +588,28 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
         except Exception:
             continue
 
-        # Debug
-        _log(f"[FrameForce] frame={fname!r} -> nres={nres} | "
+        _log(
+            f"[FrameForce] frame={fname!r} -> nres={nres} | "
             f"types: Obj={type(Obj).__name__}, P={type(P).__name__}, "
-            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, StepNum={type(StepNum).__name__}")
+            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, "
+            f"StepNum={type(StepNum).__name__}"
+        )
 
         n = int(nres or 0)
         if n == 0:
             continue
 
         # Normalize to sequences
-        Obj      = _as_seq(Obj, n)
+        Obj = _as_seq(Obj, n)
         LoadCase = _as_seq(LoadCase, n)
         StepType = _as_seq(StepType, n)
-        StepNum  = _as_seq(StepNum, n)
-        P  = _as_seq(P,  n);  V2 = _as_seq(V2, n); V3 = _as_seq(V3, n)
-        T  = _as_seq(T,  n);  M2 = _as_seq(M2, n); M3 = _as_seq(M3, n)
+        StepNum = _as_seq(StepNum, n)
+        P = _as_seq(P, n)
+        V2 = _as_seq(V2, n)
+        V3 = _as_seq(V3, n)
+        T = _as_seq(T, n)
+        M2 = _as_seq(M2, n)
+        M3 = _as_seq(M3, n)
 
         for i in range(n):
             # result order comes I/J alternating for ends-only
@@ -604,6 +624,7 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
                 "T": T[i], "M2": M2[i], "M3": M3[i],
             })
     return pd.DataFrame(rows)
+
 
 # ---------------- Area & Pattern Automation ---------------- #
 
@@ -632,13 +653,15 @@ def _get_all_area_names(model):
                 return [names]
         except Exception:
             return []
-        
+
+
 def _get_joint_xyz(model, joint_name):
     try:
         _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name), "Global")
     except Exception:
         _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name))
     return float(x), float(y), float(z)
+
 
 def _autodetect_orientation_joints(model, vertical_axis="Z"):
     """
@@ -700,6 +723,7 @@ def _autodetect_orientation_joints(model, vertical_axis="Z"):
     behind_name = min(candidates)[1]
     return apex_name, behind_name
 
+
 def _rename_point(model, old_name, new_name):
     """
     Renames a point to new_name, handling the case where new_name already exists.
@@ -729,6 +753,7 @@ def _rename_point(model, old_name, new_name):
         except Exception:
             # If all else fails, keep old_name
             return old_name
+
 
 def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True):
     """
@@ -760,50 +785,6 @@ def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", rep
                 continue
         else:
             # 2) Fallback: rotate axes to align with projection of j1->j2 in XY
-            try:
-                x1, y1, _ = _get_joint_xyz(model, joint1)
-                x2, y2, _ = _get_joint_xyz(model, joint2)
-                angle_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
-                try:
-                    area.SetLocalAxes(an, float(angle_deg))
-                except Exception:
-                    area.SetLocalAxes(an, float(angle_deg), "Global")
-            except Exception:
-                pass
-
-
-def _get_joint_xyz(model, joint_name):
-    try:
-        _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name), "Global")
-    except Exception:
-        _, x, y, z = model.PointObj.GetCoordCartesian(str(joint_name))
-    return float(x), float(y), float(z)
-
-def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True):
-    area = model.AreaObj
-    names = _get_all_area_names(model)
-    if not names:
-        return
-
-    for an in names:
-        # Try advanced API variants first
-        for meth in ("SetLocalAxesAdvanced", "SetLocalAxes_2", "SetLocalAxesByPoints"):
-            try:
-                m = getattr(area, meth)
-                plane_code = 3  # best guess for “Plane 3-1” on many v20 builds
-                if meth == "SetLocalAxesAdvanced":
-                    axis_dir = 1  # define local-1 by the vector
-                    m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
-                elif meth == "SetLocalAxesByPoints":
-                    m(an, plane_code, str(joint1), str(joint2), bool(replace))
-                else:
-                    axis_dir = 1
-                    m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
-                break  # done for this area
-            except Exception:
-                continue
-        else:
-            # Fallback: rotate local axes by angle of the j1->j2 vector projected to XY
             try:
                 x1, y1, _ = _get_joint_xyz(model, joint1)
                 x2, y2, _ = _get_joint_xyz(model, joint2)
@@ -1068,7 +1049,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     """
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
-    
+
     _ensure_openpyxl()
 
     nodes = _read_nodes_sheet(input_xlsx)
@@ -1090,7 +1071,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     sap, model = _start_sap2000_v20(visible=visible)
     try:
-        # --- NEW: define/ensure material before creating any sections ---
+        # --- Define/ensure material before creating any sections ---
         selected_material = _ensure_material_defined(model, material) if material else None
         default_mat = selected_material or "CONC40"
 
@@ -1106,27 +1087,18 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 model, areas,
                 default_section=("SHELL_200", default_mat, 0.20)
             )
-            # --- AUTO-DETECT + LABEL + ORIENT ---
+
+            # --- ORIENT USING LABEL CONVENTION: vertex = 1, opposite = E+3 ---
             try:
-                # Detect apex (farthest upward) and its nearest “behind” joint
-                apex, behind = _autodetect_orientation_joints(model, vertical_axis="Z")
-                if apex:
-                    # Relabel to "1" and "23" per your manual convention
-                    apex = _rename_point(model, apex, "1")
-                if behind:
-                    behind = _rename_point(model, behind, "23")
-                # If both exist, set area local axes using those two joints
-                if apex and behind:
-                    _set_area_axes_by_two_joints(model, joint1=apex, joint2=behind, plane="31", replace=True)
+                # nodes_tot = (E + 1)^2  →  E = sqrt(nodes_tot) - 1
+                nodes_tot = len(nodes)
+                E = int(round(nodes_tot ** 0.5)) - 1
+                behind_name = str(E + 3)
+
+                _set_area_axes_by_two_joints(model, joint1="1", joint2=behind_name, plane="31", replace=True)
             except Exception:
-                # Non-fatal: keep going even if orientation fails
-                pass
-            
-            # Orient areas like the UI step (Plane 3-1, Two Joints 1 & 23)
-            try:
+                # Fallback to the historical 1 & 23 convention
                 _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True)
-            except Exception:
-                pass
 
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
@@ -1171,7 +1143,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     close_after=False,
                     results_book_path=None
                 )
-            except Exception as e:  # <-- fixed typo
+            except Exception as e:
                 _log("[SoilSweep] Skipped:", e)
 
         # Debug
@@ -1210,7 +1182,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 disp_df.to_excel(xlw, sheet_name="JointDisplacements", index=False)
             if not force_df.empty:
                 force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
-            
+
             # Optional Soil config and summary
             if soil_results:
                 # a) Echo the soil config used
@@ -1226,10 +1198,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     "case_name": soil.get("case_name", "SOIL_CASE"),
                     "replace_each_step": soil.get("replace_each_step", True),
                 }])
-                soil_cfg_df.to_excel(xlw, sheet_name="SoilConfig", index=False) 
+                soil_cfg_df.to_excel(xlw, sheet_name="SoilConfig", index=False)
 
                 # b) One-row-per-step summary (depth + multiplier)
-                #    Rebuild multiplier exactly the way the sweep used it:
                 depths = soil_results["depths"]
                 normalize = soil.get("normalize", False)
                 gamma_val = soil.get("gamma", 18000.0)
@@ -1238,7 +1209,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     mult = (gamma_val * d) if normalize else gamma_val
                     summary_rows.append({"Depth_m": d, "Multiplier": mult})
                 pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="SoilSummary", index=False)
-            if soil_results:
+
+                # c) Per-step displacement sheets
                 for depth_val, ddf in zip(soil_results["depths"], soil_results["displacements_by_step"]):
                     if ddf.empty:
                         continue
@@ -1261,10 +1233,3 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 sap.ApplicationExit(True)  # True => don't prompt to save
         except Exception:
             pass
-
-
-
-
-
-
-
