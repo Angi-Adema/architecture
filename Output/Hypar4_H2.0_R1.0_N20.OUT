@@ -12,5 +12,12 @@
          ( ) = Null DOF
 
   JOINTS              UX  UY  UZ  RX  RY  RZ
+     861 TO     176    A   A   A   A   A   A
+     442               -   -   -   -   -   -
+      22 TO      45    A   A   A   A   A   A
        1               -   -   -   -   -   -
-       2 TO     441    A   A   A   A   A   A
+    1236 TO     905    A   A   A   A   A   A
+     883               -   -   -   -   -   -
+     157 TO    1343    A   A   A   A   A   A
+    1324               -   -   -   -   -   -
+    1305 TO    1681    A   A   A   A   A   A
