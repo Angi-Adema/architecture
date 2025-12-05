@@ -442,12 +442,22 @@ def _build_areas_from_excel(model, areas_df,
                             default_section=("SHELL_200", "CONC40", 0.20)):
     """
     Creates area (shell) objects by named joints:
-      - Triangles: P1,P2,P3 (P4 is None)
+      - Triangles: P1,P2,P3 (P4 is None/blank)
       - Quads:     P1,P2,P3,P4
-    Also ensures a default shell section.
+
+    Excel 'Areas' sheet columns (no headers):
+      0: AreaName
+      1: P1   2: P2   3: P3   4: P4(optional)
+      5: Section(optional)   6: Material(optional)
     """
     sec_name, mat_name, thick_m = default_section
-    # Ensure a simple shell prop (thin/plate). Some versions use SetShell_1/2; try common names.
+    area = model.AreaObj
+
+    # Ensure a default shell property & material exist
+    try:
+        model.PropMaterial.SetMaterial(mat_name, 2)  # 2 = Concrete (SAP code)
+    except Exception:
+        pass
     try:
         model.PropArea.SetShell(sec_name, mat_name, float(thick_m))
     except Exception:
@@ -455,42 +465,81 @@ def _build_areas_from_excel(model, areas_df,
             model.PropArea.SetShell_1(sec_name, mat_name, float(thick_m))
         except Exception:
             pass
-    try:
-        model.PropMaterial.SetMaterial(mat_name, 2)  # 2 = concrete
-    except Exception:
-        pass
 
     for _, r in areas_df.iterrows():
         name = str(r["Area"])
-        p1, p2, p3, p4 = str(r["P1"]), str(r["P2"]), str(r["P3"]), r["P4"]
+        p1 = str(r["P1"])
+        p2 = str(r["P2"])
+        p3 = str(r["P3"])
+        p4 = r["P4"]
+
+        # Section / Material (optional overrides)
         sec = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
         mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
+
+        # (Re)define material if custom
         if pd.notna(r["Material"]):
             try:
                 model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))
             except Exception:
                 pass
-        # (re)define the section if a custom one appears
+
+        # (Re)define shell property for this section
         try:
             model.PropArea.SetShell(sec, mat, float(thick_m))
         except Exception:
-            pass
-
-        try:
-            if p4 is None or (isinstance(p4, float) and pd.isna(p4)):
-                # triangle (3 points)
-                model.AreaObj.AddByPoint(p1, p2, p3, name)
-            else:
-                p4 = str(p4)
-                model.AreaObj.AddByPoint(p1, p2, p3, p4, name)
-            # assign section
             try:
-                model.AreaObj.SetProperty(name, sec)
+                model.PropArea.SetShell_1(sec, mat, float(thick_m))
             except Exception:
                 pass
-        except Exception as e:
-            raise RuntimeError(f"Failed to create area {name} ({p1},{p2},{p3},{p4}): {e}")
 
+        # Build point list
+        if p4 is None or (isinstance(p4, float) and pd.isna(p4)) or str(p4) == "":
+            # Triangle
+            point_names = [p1, p2, p3]
+        else:
+            # Quad
+            p4 = str(p4)
+            point_names = [p1, p2, p3, p4]
+
+        n_pts = len(point_names)
+
+        # Try several AddByPoint signatures (version-safe)
+        created_name = name
+        created = False
+        for meth in ("AddByPoint", "AddByPoint_1", "AddByPoint_2"):
+            try:
+                m = getattr(area, meth)
+            except AttributeError:
+                continue
+
+            try:
+                # Most common: (NumberPoints, PointNames, Name, PropName, CSys)
+                ret = m(n_pts, point_names, created_name, sec, "Global")
+                created = True
+                break
+            except TypeError:
+                try:
+                    # Some builds: (NumberPoints, PointNames, Name)
+                    ret = m(n_pts, point_names, created_name)
+                    created = True
+                    break
+                except Exception:
+                    continue
+            except Exception:
+                continue
+
+        if not created:
+            raise RuntimeError(
+                f"Failed to create area {name} "
+                f"({','.join(point_names)}) via AddByPoint variants."
+            )
+
+        # Try to assign property explicitly (in case the signature didn’t)
+        try:
+            area.SetProperty(created_name, sec)
+        except Exception:
+            pass
 
 def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
     """
