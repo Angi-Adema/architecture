@@ -314,9 +314,9 @@ def run():
             ws_nodes = wb.add_worksheet('Nodes')
             for i, row in enumerate(nodes_arr):
                 ws_nodes.write(i, 0, row[0])  # Name
-                ws_nodes.write(i, 3, row[1])  # X
-                ws_nodes.write(i, 4, row[2])  # Y
-                ws_nodes.write(i, 6, row[3])  # Z
+                ws_nodes.write(i, 1, row[1])  # X
+                ws_nodes.write(i, 2, row[2])  # Y
+                ws_nodes.write(i, 3, row[3])  # Z
 
             ws_elements = wb.add_worksheet('Elements')
             for i, row in enumerate(elements_arr):
