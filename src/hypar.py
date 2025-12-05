@@ -1,9 +1,14 @@
 import numpy as np
 
-# Eliminated the hardcoded values because in umbrella.py, when the user hits Run,
-# the values entered by the user are dynamically passed into the geometry functions.
 
-def hypar(H, Re, Ne, N):
+# ------------------------------------------------------------
+# 1) Original geometry for a SINGLE hypar tympan (one panel)
+#    This is your existing logic, just moved into a helper.
+#    It returns:
+#       nod_ij: (nodes_tot, 4)  -> [Name, X, Y, Z]
+#       ele_ij: (ele_num, 5)    -> [Frame, I, J, Section, Material]
+# ------------------------------------------------------------
+def _hypar_one_panel(H, Re, Ne, N):
     psi = np.pi / Ne
 
     def get_z(xp, yp):
@@ -32,13 +37,14 @@ def hypar(H, Re, Ne, N):
         yr = x * np.sin(2 * theta) + y * np.cos(2 * theta)
         return xr, yr
 
-    def rotate(x, y, theta, n):
+    def rotate_local(x, y, theta, n):
         xr = x * np.cos(theta * n) - y * np.sin(theta * n)
         yr = x * np.sin(theta * n) + y * np.cos(theta * n)
         return xr, yr
 
-    # ----- Geometry generation -----
+    # ------------- Generate panel nodes (same as your code) -------------
     xp_base_i = np.linspace(0, H, N + 1)
+    xp_index_original = np.linspace(0, N, N + 1)  # kept for completeness
     xp_index_i = np.linspace(0, N, N + 1)
     nodes_tot = int((N + 1) ** 2)
 
@@ -63,13 +69,16 @@ def hypar(H, Re, Ne, N):
             yp_i[n] = np.linspace(0, get_K(xp_i[n]), int(index_i[n] + 1))[int(index)]
             n += 1
 
-    # Compute XYZ for all nodes
+    # z for each node
+    z_i = np.array([get_z(xp_i[i], yp_i[i]) for i in range(nodes_tot)])
+
+    # raw (x, y, z) before mirroring / rotation
     nodes_ij = np.array(
         [get_xy(xp_i[i], yp_i[i]) + (get_z(xp_i[i], yp_i[i]),)
          for i in range(nodes_tot)]
     ).T  # shape (3, nodes_tot)
 
-    # Mirror where needed
+    # mirror half of the triangle (your sym() logic)
     nodes_mod_ij = np.copy(nodes_ij)
     for col in range(N + 1):
         for i in range(N + 1):
@@ -79,65 +88,136 @@ def hypar(H, Re, Ne, N):
                 nodes_mod_ij[0][index] = xyr[0]
                 nodes_mod_ij[1][index] = xyr[1]
 
-    # Rotate whole patch
+    # rotate panel to final local orientation
     nodes_rot_ij = np.zeros((3, nodes_tot))
     for i in range(nodes_tot):
-        x, y = rotate(nodes_mod_ij[0][i], nodes_mod_ij[1][i], -psi, 1)
+        x, y = rotate_local(nodes_mod_ij[0][i], nodes_mod_ij[1][i], -psi, 1)
         nodes_rot_ij[:, i] = [x, y, nodes_mod_ij[2][i]]
 
-    # ----- Nodes array: [Name, X, Y, Z] -----
-    nod_ij = np.zeros((nodes_tot, 4), dtype=float)
-    for n in range(nodes_tot):
-        nod_ij[n] = [
-            n + 1,                     # Name
-            nodes_rot_ij[0][n],        # X
-            nodes_rot_ij[1][n],        # Y
-            nodes_rot_ij[2][n],        # Z
-        ]
-
-    # ----- Original quad connectivity (local to this function) -----
-    ele_num = int(N ** 2)
-    quad_ij = np.zeros((ele_num, 5), dtype=float)  # [id, n1, n2, n3, n4]
+    # ------------- Build frame connectivity for ONE panel -------------
+    ele_num = int(N**2)
+    ele_ij = np.zeros((ele_num, 5), dtype=float)  # [Frame, I, J, Section, Material]
     n = 0
+
+    # NOTE: This keeps your original indexing scheme.
+    # Section / Material are placeholders (0 for now).
     for col in range(N):
         for row in range(N):
             base = int(col + 1 + N * col + row)
-            quad_ij[n] = [n + 1, base, base + N + 1, base + N + 2, base + 1]
+            ele_ij[n, 0] = n + 1          # Frame ID
+            ele_ij[n, 1] = base           # I
+            ele_ij[n, 2] = base + N + 1   # J
+            ele_ij[n, 3] = 0              # Section (optional)
+            ele_ij[n, 4] = 0              # Material (optional)
             n += 1
 
-    # ----- Areas sheet data: one quad per cell -----
-    # Format expected by umbrella/sap_integration:
-    #   [AreaName, P1, P2, P3, P4, Section, Material]
-    areas = []
-    for row in quad_ij:
-        _, n1, n2, n3, n4 = row.astype(int)
-        areas.append([
-            int(len(areas) + 1),  # AreaName
-            int(n1),
-            int(n2),
-            int(n3),
-            int(n4),
-            "",                    # Section (optional, left blank)
-            "",                    # Material (optional, left blank)
-        ])
+    # ------------- Pack node table: [Name, X, Y, Z] -------------
+    nod_ij = np.zeros((nodes_tot, 4), dtype=float)
+    for n in range(nodes_tot):
+        nod_ij[n, 0] = n + 1
+        nod_ij[n, 1] = nodes_rot_ij[0][n]
+        nod_ij[n, 2] = nodes_rot_ij[1][n]
+        nod_ij[n, 3] = nodes_rot_ij[2][n]
 
-    # ----- Frame elements (grid lines) -----
-    # Build all edges of all quads, then deduplicate:
-    # format: [Frame, I, J, Section, Material]
-    edges = set()
-    for row in quad_ij:
-        _, n1, n2, n3, n4 = row.astype(int)
-        for (i, j) in [(n1, n2), (n2, n3), (n3, n4), (n4, n1)]:
-            key = tuple(sorted((int(i), int(j))))
-            edges.add(key)
+    return nod_ij, ele_ij
 
-    elements = []
-    frame_id = 1
-    for (i, j) in sorted(edges):
-        elements.append([frame_id, i, j, "", ""])
-        frame_id += 1
 
-    elements_arr = np.array(elements, dtype=object)
+# ------------------------------------------------------------
+# 2) New helper: rotate a point around the GLOBAL Z-axis
+# ------------------------------------------------------------
+def _rotate_global_z(x, y, z, theta):
+    """
+    Rotate (x, y, z) about the global Z-axis by angle 'theta' (radians).
+    """
+    xr = x * np.cos(theta) - y * np.sin(theta)
+    yr = x * np.sin(theta) + y * np.cos(theta)
+    return xr, yr, z
 
-    # Return nodes, frame elements, and area quads
-    return nod_ij, elements_arr, areas
+
+# ------------------------------------------------------------
+# 3) Public hypar(H, Re, Ne, N): FULL umbrella
+#
+#    - Builds ONE panel using _hypar_one_panel
+#    - Radially replicates it Ne times around the Z-axis
+#    - Deduplicates joints at identical (x, y, z)
+#    - Returns:
+#         nodes_all: [Name, X, Y, Z] for entire umbrella
+#         elems_all: [Frame, I, J, Section, Material] for entire umbrella
+#
+#    This matches what umbrella.py expects:
+#         ret = hypar(H, Re, Ne, N)
+#         nodes, elements, areas = _unpack_geometry(ret)
+# ------------------------------------------------------------
+def hypar(H, Re, Ne, N):
+    # Generate single-panel geometry
+    base_nodes, base_elems = _hypar_one_panel(H, Re, Ne, N)
+
+    # We'll build the full umbrella here
+    coord_to_id = {}      # (x,y,z) -> global node ID
+    all_nodes = []        # [ID, X, Y, Z]
+    all_elems = []        # [Frame, I, J, Section, Material]
+
+    next_node_id = 1
+    next_frame_id = 1
+
+    # Pre-cast for convenience
+    base_nodes = np.asarray(base_nodes, dtype=float)
+    base_elems = np.asarray(base_elems, dtype=float)
+
+    # Angular increment for each panel
+    dtheta = 2.0 * np.pi / float(Ne)
+
+    # --------- Replicate each panel around the Z-axis ---------
+    for k in range(Ne):
+        theta = k * dtheta
+
+        # Map local node ID -> global node ID for this copy
+        local_to_global = {}
+
+        # ----- Nodes -----
+        for row in base_nodes:
+            local_id = int(row[0])
+            x, y, z = float(row[1]), float(row[2]), float(row[3])
+
+            xr, yr, zr = _rotate_global_z(x, y, z, theta)
+
+            # key to merge coincident joints across panels
+            key = (round(xr, 10), round(yr, 10), round(zr, 10))
+
+            if key in coord_to_id:
+                gid = coord_to_id[key]
+            else:
+                gid = next_node_id
+                next_node_id += 1
+                coord_to_id[key] = gid
+                all_nodes.append([gid, xr, yr, zr])
+
+            local_to_global[local_id] = gid
+
+        # ----- Frames (elements) -----
+        for row in base_elems:
+            # base_elems: [Frame, I, J, Section, Material]
+            local_I = int(row[1])
+            local_J = int(row[2])
+            sec = row[3]
+            mat = row[4]
+
+            global_I = local_to_global[local_I]
+            global_J = local_to_global[local_J]
+
+            all_elems.append([
+                next_frame_id,
+                global_I,
+                global_J,
+                sec,
+                mat
+            ])
+            next_frame_id += 1
+
+    # Convert back to numpy arrays (dtype=object to be safe with ints/floats)
+    nodes_all = np.asarray(all_nodes, dtype=object)
+    elems_all = np.asarray(all_elems, dtype=object)
+
+    # We currently return NO Areas; umbrella.py will treat this as 2-tuple
+    # and skip any area-related logic.
+    return nodes_all, elems_all
