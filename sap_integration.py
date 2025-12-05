@@ -987,7 +987,7 @@ def sweep_soil_pressure_by_depth(
         else:
             multiplier = gamma_soil_N_per_m3       # N/m^3
 
-        # 1) Set joint pattern values for this step depth d
+        # Set joint pattern values for this step depth d
         for joint_name, x, y, z in joints:
             elev = (x, y, z)[axis_index]
             raw_depth = max(0.0, surface_elev - elev)
@@ -1002,7 +1002,7 @@ def sweep_soil_pressure_by_depth(
                 model, joint_name, joint_pattern_name, pattern_value
             )
 
-        # 2) Assign pressure to all areas via the joint pattern
+        # Assign pressure to all areas via the joint pattern
         for an in area_names:
             _assign_area_surface_pressure_by_joint_pattern(
                 model,
@@ -1014,7 +1014,7 @@ def sweep_soil_pressure_by_depth(
                 replace=replace_area_load_each_step
             )
 
-        # 3) Solve and collect
+        # Solve and collect
         _run_analysis(model)
 
         node_names = [n for (n, _, _, _) in joints]
