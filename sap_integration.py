@@ -1055,6 +1055,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     nodes = _read_nodes_sheet(input_xlsx)
     elems = _read_elements_sheet(input_xlsx)
 
+    # Debug: print bounding box
+    _log(
+        "Bounds:",
+        f"X [{nodes['X'].min()}, {nodes['X'].max()}], "
+        f"Y [{nodes['Y'].min()}, {nodes['Y'].max()}], "
+        f"Z [{nodes['Z'].min()}, {nodes['Z'].max()}]"
+    )
+
     # ---- validate required sheets before doing anything else ----
     if nodes.empty:
         raise ValueError("Nodes sheet is empty.")
