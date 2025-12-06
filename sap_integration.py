@@ -1362,8 +1362,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     # ---- read Excel ----
     nodes_in = _read_nodes_sheet(input_xlsx)
-    elems_in = _read_elements_sheet(input_xlsx)
-    has_frames = not elems_in.empty  # <-- frames are optional now
+    elems_in = _read_elements_sheet(input_xlsx)   # may be empty; that's fine
 
     # Debug: print bounding box
     _log(
@@ -1385,7 +1384,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     except Exception:
         areas_in = None
 
-    # Infer Ne (number of tympans) from filename – still useful for orientation logic
+    # Ne is still useful for orientation logic, but not critical
     Ne_inferred = _infer_ne_from_filename(input_xlsx) or 4
 
     sap, model = _start_sap2000_v20(visible=visible)
@@ -1394,17 +1393,19 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         selected_material = _ensure_material_defined(model, material) if material else None
         default_mat = selected_material or "CONC40"
 
-        # Build frames only if we actually have any
-        if has_frames:
-            _build_model_from_excel(
-                model, nodes_in, elems_in,
-                default_section=("RECT_300x500", default_mat, (0.30, 0.50))
-            )
+        # ⬇️ ALWAYS build points; frames are created only if there are rows in elems_in
+        _build_model_from_excel(
+            model,
+            nodes_in,
+            elems_in,
+            default_section=("RECT_300x500", default_mat, (0.30, 0.50))
+        )
 
         # Build areas (shells) with default shell property that uses the chosen material
         if areas_in is not None:
             _build_areas_from_excel(
-                model, areas_in,
+                model,
+                areas_in,
                 default_section=("SHELL_200", default_mat, 0.20)
             )
 
@@ -1413,10 +1414,22 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 nodes_tot = len(nodes_in)
                 E = int(round(nodes_tot ** 0.5)) - 1
                 behind_name = str(E + 3)
-                _set_area_axes_by_two_joints(model, joint1="1", joint2=behind_name, plane="31", replace=True)
+                _set_area_axes_by_two_joints(
+                    model,
+                    joint1="1",
+                    joint2=behind_name,
+                    plane="31",
+                    replace=True
+                )
             except Exception:
                 # Fallback to historical 1 & 23 convention
-                _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True)
+                _set_area_axes_by_two_joints(
+                    model,
+                    joint1="1",
+                    joint2="23",
+                    plane="31",
+                    replace=True
+                )
 
         # IMPORTANT: we **do not** replicate anything inside SAP2000 any more.
         # The full umbrella geometry (all tympans) is already present in the Nodes/Areas.
