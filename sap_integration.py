@@ -880,41 +880,55 @@ def _iter_all_point_coords(model):
     """
     Yield (name, x, y, z) for all joints in the model.
 
-    Handles both 2-tuple and 3-tuple signatures of GetNameList:
-      (ret, names)           or
-      (ret, number_names, names)
+    Handles both SAP2000 variants of GetNameList:
+      - (ret, NumberNames, Names)
+      - (ret, Names)
+
+    And both variants of GetCoordCartesian:
+      - (ret, x, y, z)
+      - (ret, x, y, z, CSys)
+
+    Always casts joint names to strings so COM doesn’t see ints.
     """
-    out = model.PointObj.GetNameList()
-    # out may be (ret, names) or (ret, n, names)
-    if isinstance(out, tuple):
-        if len(out) == 2:
-            _, names = out
-        elif len(out) == 3:
-            _, _, names = out
-        else:
-            names = out[-1]
-    else:
-        names = out
-
     try:
-        names = list(names)
+        out = model.PointObj.GetNameList()
     except Exception:
-        names = [names]
+        return  # nothing to yield
 
-    for nm in names:
+    # Normalize GetNameList outputs
+    # out might be (ret, n, names) OR (ret, names)
+    if isinstance(out, (list, tuple)) and len(out) == 3:
+        ret, n_names, names = out
+    else:
         try:
-            out_coord = model.PointObj.GetCoordCartesian(nm, "Global")
+            ret, names = out
         except Exception:
-            out_coord = model.PointObj.GetCoordCartesian(nm)
+            # Unexpected shape – bail out quietly
+            return
 
-        # out_coord can be (ret, x, y, z) or sometimes longer;
-        # we always grab the last three as x, y, z.
-        if isinstance(out_coord, tuple) and len(out_coord) >= 4:
-            x, y, z = out_coord[-3], out_coord[-2], out_coord[-1]
+    # Make sure we have a Python sequence of names
+    try:
+        names_seq = list(names)
+    except Exception:
+        names_seq = [names]
+
+    for nm in names_seq:
+        name_str = str(nm)  # ALWAYS pass a string into COM
+
+        # Try with CSys argument first, fall back to older signature
+        try:
+            out_coord = model.PointObj.GetCoordCartesian(name_str, "Global")
+        except Exception:
+            out_coord = model.PointObj.GetCoordCartesian(name_str)
+
+        # out_coord can be (ret,x,y,z) or (ret,x,y,z,csys)
+        if isinstance(out_coord, (list, tuple)) and len(out_coord) >= 4:
+            _, x, y, z = out_coord[:4]
         else:
-            _, x, y, z = out_coord
+            # If something really odd comes back, skip this point
+            continue
 
-        yield nm, float(x), float(y), float(z)
+        yield name_str, float(x), float(y), float(z)
 
 
 # --- new helpers for group, replication, and extracting full model --- #
