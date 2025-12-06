@@ -1350,29 +1350,22 @@ def sweep_soil_pressure_by_depth(
 
 def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None, material=None):
     """
-    Build & analyze a model from 'Nodes' and optional 'Areas' sheets,
+    Build & analyze a model from 'Nodes', optional 'Elements', and optional 'Areas' sheets,
     then write results to: <input_basename>_results.xlsx
 
-    For the hypar umbrella, we treat 'Elements' as connectivity for areas
-    only. We do NOT create frame objects from 'Elements' to avoid the
-    zig-zag / curved lines you were seeing.
+    Frames (line objects) are now optional – a pure shell model is allowed.
     """
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
 
     _ensure_openpyxl()
 
-    # ---- read Excel as written by umbrella.py ----
-    nodes_in = _read_nodes_sheet(input_xlsx)      # Name, X, Y, Z
-    elems_in = _read_elements_sheet(input_xlsx)   # we keep this only to echo back to results
-    try:
-        areas_in = _read_areas_sheet(input_xlsx)  # Area, P1..P4, Section, Material
-        if areas_in is not None and areas_in.empty:
-            areas_in = None
-    except Exception:
-        areas_in = None
+    # ---- read Excel ----
+    nodes_in = _read_nodes_sheet(input_xlsx)
+    elems_in = _read_elements_sheet(input_xlsx)
+    has_frames = not elems_in.empty  # <-- frames are optional now
 
-    # Debug: print bounding box based on input Nodes
+    # Debug: print bounding box
     _log(
         "Bounds:",
         f"X [{nodes_in['X'].min()}, {nodes_in['X'].max()}], "
@@ -1380,9 +1373,20 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         f"Z [{nodes_in['Z'].min()}, {nodes_in['Z'].max()}]"
     )
 
-    # ---- basic validation ----
+    # ---- validate required sheets before doing anything else ----
     if nodes_in.empty:
         raise ValueError("Nodes sheet is empty.")
+
+    # Try to read Areas (quietly skip if the sheet isn't present)
+    try:
+        areas_in = _read_areas_sheet(input_xlsx)
+        if areas_in is not None and areas_in.empty:
+            areas_in = None
+    except Exception:
+        areas_in = None
+
+    # Infer Ne (number of tympans) from filename – still useful for orientation logic
+    Ne_inferred = _infer_ne_from_filename(input_xlsx) or 4
 
     sap, model = _start_sap2000_v20(visible=visible)
     try:
@@ -1390,36 +1394,41 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         selected_material = _ensure_material_defined(model, material) if material else None
         default_mat = selected_material or "CONC40"
 
-        # 1) Create ONLY joints from Nodes
-        _create_points_from_nodes(model, nodes_in)
+        # Build frames only if we actually have any
+        if has_frames:
+            _build_model_from_excel(
+                model, nodes_in, elems_in,
+                default_section=("RECT_300x500", default_mat, (0.30, 0.50))
+            )
 
-        # 2) Create ONLY shell areas from Areas sheet
+        # Build areas (shells) with default shell property that uses the chosen material
         if areas_in is not None:
             _build_areas_from_excel(
-                model,
-                areas_in,
+                model, areas_in,
                 default_section=("SHELL_200", default_mat, 0.20)
             )
 
-            # Optional: orient local axes using auto-detected apex/behind
+            # --- Orient area local axes based on node labels (1 and E+3) ---
             try:
-                apex, behind = _autodetect_orientation_joints(model, vertical_axis="Z")
-                if apex and behind:
-                    _set_area_axes_by_two_joints(
-                        model,
-                        joint1=apex,
-                        joint2=behind,
-                        plane="31",
-                        replace=True,
-                    )
-            except Exception as e:
-                _log("[WARN] Failed to set area axes automatically:", e)
+                nodes_tot = len(nodes_in)
+                E = int(round(nodes_tot ** 0.5)) - 1
+                behind_name = str(E + 3)
+                _set_area_axes_by_two_joints(model, joint1="1", joint2=behind_name, plane="31", replace=True)
+            except Exception:
+                # Fallback to historical 1 & 23 convention
+                _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True)
 
-        # 3) Fix supports at base & add self-weight
-        _fix_base_nodes(model, nodes_in)
+        # IMPORTANT: we **do not** replicate anything inside SAP2000 any more.
+        # The full umbrella geometry (all tympans) is already present in the Nodes/Areas.
+
+        # Extract back full model (for consistent results workbook)
+        nodes, elems, areas = _extract_model_to_dfs(model)
+
+        # Fix supports using full umbrella nodes
+        _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
-        # Save model beside spreadsheet
+        # Save model beside spreadsheet (e.g., umbrella.sdb)
         base, _ = os.path.splitext(input_xlsx)
         sdb_path = base + ".sdb"
         try:
@@ -1427,16 +1436,16 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         except Exception:
             pass
 
-        # Run analysis for the Dead case
         _run_analysis(model)
 
+        # Ensure only the desired case is selected for output
         try:
             model.Results.Setup.DeselectAllCasesAndCombosForOutput()
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
         except Exception:
             pass
 
-        # --- optional soil sweep ---
+        # --- Soil sweep (only if provided) ---
         soil_results = None
         if soil:
             try:
@@ -1455,47 +1464,54 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     replace_area_load_each_step=replace_area_load_each_step,
                     visible=visible,
                     close_after=False,
-                    results_book_path=None,
+                    results_book_path=None
                 )
             except Exception as e:
                 _log("[SoilSweep] Skipped:", e)
 
-        # ---- collect results ----
-        _log(f"[run] nodes_df={len(nodes_in)} rows, elems_df={len(elems_in)} rows")
-        if areas_in is not None:
-            _log(f"[run] areas_df={len(areas_in)} rows")
-        _log(f"[run] first 5 node names: {nodes_in['Name'].astype(str).tolist()[:5]}")
+        # Debug
+        _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
+        if areas is not None:
+            _log(f"[run] areas_df={len(areas)} rows")
 
-        node_names = nodes_in["Name"].astype(str).tolist()
-        frame_names = []   # we did NOT create any frames
+        if "Name" in nodes.columns:
+            _log(f"[run] first 5 node names: {nodes['Name'].astype(str).tolist()[:5]}")
+
+        if "Frame" in elems.columns:
+            _log(f"[run] first 5 frame names: {elems['Frame'].astype(str).tolist()[:5]}")
+        else:
+            _log("[run] no 'Frame' column in elems (model may have only areas/shells).")
+
+        # Results
+        node_names = nodes["Name"].astype(str).tolist()
+        frame_names = elems["Frame"].astype(str).tolist() if ("Frame" in elems.columns and len(elems) > 0) else []
 
         import traceback
         try:
             disp_df = _collect_joint_displacements(model, node_names, "Dead")
-            force_df = pd.DataFrame()  # no frames => no frame forces
+            if frame_names:
+                force_df = _collect_frame_end_forces(model, frame_names, "Dead")
+            else:
+                force_df = pd.DataFrame()
         except Exception:
             _log("[Error] While collecting results:")
             _log(traceback.format_exc())
             raise
 
-        # ---- write results workbook ----
         results_xlsx = base + "_results.xlsx"
         _ensure_xlsxwriter()
 
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
-            # Echo the input definition (Nodes / Elements / Areas from Excel)
-            nodes_in.to_excel(xlw, sheet_name="Nodes", index=False)
-            if not elems_in.empty:
-                elems_in.to_excel(xlw, sheet_name="Elements", index=False)
-            if areas_in is not None and not areas_in.empty:
-                areas_in.to_excel(xlw, sheet_name="Areas", index=False)
+            nodes.to_excel(xlw, sheet_name="Nodes", index=False)
+            elems.to_excel(xlw, sheet_name="Elements", index=False)
+            if areas is not None and not areas.empty:
+                areas.to_excel(xlw, sheet_name="Areas", index=False)
 
             if not disp_df.empty:
                 disp_df.to_excel(xlw, sheet_name="JointDisplacements", index=False)
             if not force_df.empty:
                 force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
 
-            # Optional Soil config and summary
             if soil_results:
                 soil_cfg_df = pd.DataFrame([{
                     "depth_min": soil.get("depth_min", 0.0),
@@ -1518,26 +1534,21 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 for d in depths:
                     mult = (gamma_val * d) if normalize else gamma_val
                     summary_rows.append({"Depth_m": d, "Multiplier": mult})
-                pd.DataFrame(summary_rows).to_excel(
-                    xlw, sheet_name="SoilSummary", index=False
-                )
+                pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="SoilSummary", index=False)
 
-                for depth_val, ddf in zip(
-                    soil_results["depths"],
-                    soil_results["displacements_by_step"],
-                ):
+                for depth_val, ddf in zip(soil_results["depths"], soil_results["displacements_by_step"]):
                     if ddf.empty:
                         continue
                     dtag = f"d{str(depth_val).replace('.', '_')}"
                     ddf.to_excel(xlw, sheet_name=f"SoilDisp_{dtag}", index=False)
 
-        num_areas = 0 if areas_in is None else len(areas_in)
+        num_areas = 0 if areas is None else len(areas)
 
         return {
             "model_path": sdb_path,
             "results_path": results_xlsx,
-            "num_nodes": len(nodes_in),
-            "num_frames": 0,  # intentionally 0: we didn't build frames
+            "num_nodes": len(nodes),
+            "num_frames": len(elems),
             "num_areas": num_areas,
             "disp_rows": 0 if disp_df.empty else len(disp_df),
             "force_rows": 0 if force_df.empty else len(force_df),
@@ -1545,6 +1556,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     finally:
         try:
             if 'sap' in locals() and (close_after or not visible):
-                sap.ApplicationExit(True)  # True => don't prompt to save
+                sap.ApplicationExit(True)
         except Exception:
             pass
