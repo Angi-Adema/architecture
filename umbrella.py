@@ -54,20 +54,32 @@ def _normalize_point_name(v):
 
 
 def validate_areas_against_nodes(areas, nodes):
-    """Ensure P1..P4 (if given) are valid node names from the Nodes sheet."""
-    if not areas:
+    """
+    Ensure P1..P4 (if given) are valid node names from the Nodes sheet.
+    Works whether `areas` is a list of rows or a NumPy array.
+    """
+    if areas is None:
         return
 
-    # Nodes rows are [Name, X, Y, Z]
-    node_names = {_normalize_point_name(r[0]) for r in nodes}
+    # Normalize to a NumPy array for safe size/iteration
+    areas_arr = np.asarray(areas, dtype=object)
 
-    for idx, row in enumerate(areas, start=1):
-        # row = [AreaName, P1, P2, P3, P4?, Section?, Material?]
+    # If there are no rows, nothing to validate
+    if areas_arr.size == 0:
+        return
+
+    # Nodes rows: [Name, X, Y, Z]
+    node_names = {str(r[0]) for r in nodes}
+
+    # Each area row: [AreaName, P1, P2, P3, P4?, Section?, Material?]
+    for idx, row in enumerate(areas_arr, start=1):
         for p in row[1:5]:  # P1..P4
             if p in (None, ""):
                 continue
-            if _normalize_point_name(p) not in node_names:
-                raise ValueError(f"Areas row {idx}: point '{p}' not found in Nodes.")
+            if str(p) not in node_names:
+                raise ValueError(
+                    f"Areas row {idx}: point '{p}' not found in Nodes."
+                )
 
 
 # ---------------- Setup Paths (dev & PyInstaller) ---------------- #
