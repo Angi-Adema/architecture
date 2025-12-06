@@ -1475,17 +1475,30 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
         if areas is not None:
             _log(f"[run] areas_df={len(areas)} rows")
-        _log(f"[run] first 5 node names: {nodes['Name'].astype(str).tolist()[:5]}")
-        _log(f"[run] first 5 frame names: {elems['Frame'].astype(str).tolist()[:5]}")
+
+        if "Name" in nodes.columns:
+            _log(f"[run] first 5 node names: {nodes['Name'].astype(str).tolist()[:5]}")
+
+        if "Frame" in elems.columns:
+            _log(f"[run] first 5 frame names: {elems['Frame'].astype(str).tolist()[:5]}")
+        else:
+            _log("[run] no 'Frame' column in elems (model may have only areas/shells).")
 
         # Results
         node_names = nodes["Name"].astype(str).tolist()
-        frame_names = elems["Frame"].astype(str).tolist()
+
+        if "Frame" in elems.columns and len(elems) > 0:
+            frame_names = elems["Frame"].astype(str).tolist()
+        else:
+            frame_names = []
 
         import traceback
         try:
             disp_df = _collect_joint_displacements(model, node_names, "Dead")
-            force_df = _collect_frame_end_forces(model, frame_names, "Dead")
+            if frame_names:
+                force_df = _collect_frame_end_forces(model, frame_names, "Dead")
+            else:
+                force_df = pd.DataFrame()
         except Exception:
             _log("[Error] While collecting results:")
             _log(traceback.format_exc())
