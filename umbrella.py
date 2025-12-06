@@ -342,6 +342,105 @@ def _has_plottable_nodes(nodes) -> bool:
         return np.isfinite(xyz).all(axis=1).any()
     except Exception:
         return False
+    
+def _replicate_radially(nodes, elements, areas, Ne):
+    """
+    Take a single tympan (nodes, elements, areas) and replicate it Ne times
+    around the global Z-axis.
+
+    nodes:   array-like, shape (n_nodes, 4)  [ID, X, Y, Z]
+    elements: array-like, shape (n_elems, 5) [ID, P1, P2, P3, P4]
+    areas:   array-like, shape (n_areas, 7) [AreaName, P1, P2, P3, P4, Section, Material]
+             or None
+
+    Returns full-umbrella:
+        nodes_full, elements_full, areas_full
+    """
+    import numpy as np
+
+    # If Ne == 1, nothing to replicate
+    if Ne <= 1:
+        return np.asarray(nodes, dtype=float), np.asarray(elements, dtype=float), (
+            None if areas is None else np.asarray(areas, dtype=object)
+        )
+
+    base_nodes = np.asarray(nodes, dtype=float)
+    base_elems = np.asarray(elements, dtype=float)
+    base_areas = None if areas is None else np.asarray(areas, dtype=object)
+
+    n_nodes_base = base_nodes.shape[0]
+    n_elems_base = base_elems.shape[0]
+    angle_step = 2.0 * np.pi / float(Ne)
+
+    all_nodes = []
+    all_elems = []
+    all_areas = [] if base_areas is not None else None
+
+    for k in range(Ne):
+        angle = k * angle_step
+        c = np.cos(angle)
+        s = np.sin(angle)
+        node_offset = k * n_nodes_base
+        elem_offset = k * n_elems_base
+
+        # --- Nodes ---
+        for i in range(n_nodes_base):
+            nid_base = int(round(base_nodes[i, 0]))
+            x, y, z = base_nodes[i, 1], base_nodes[i, 2], base_nodes[i, 3]
+
+            xr = x * c - y * s
+            yr = x * s + y * c
+            zr = z
+
+            new_id = nid_base + node_offset
+            all_nodes.append([new_id, xr, yr, zr])
+
+        # --- Elements (quad connectivity) ---
+        for j in range(n_elems_base):
+            eid_base = int(round(base_elems[j, 0]))
+            p1 = int(round(base_elems[j, 1]))
+            p2 = int(round(base_elems[j, 2]))
+            p3 = int(round(base_elems[j, 3]))
+            p4 = int(round(base_elems[j, 4]))
+
+            new_eid = eid_base + elem_offset
+            all_elems.append([
+                new_eid,
+                p1 + node_offset,
+                p2 + node_offset,
+                p3 + node_offset,
+                p4 + node_offset,
+            ])
+
+        # --- Areas (shells) ---
+        if base_areas is not None:
+            for row in base_areas:
+                area_name_base = str(row[0])
+
+                # P1..P4 in the Areas sheet
+                p1 = int(round(float(row[1])))
+                p2 = int(round(float(row[2])))
+                p3 = int(round(float(row[3])))
+                p4 = int(round(float(row[4])))
+
+                sec = row[5]
+                mat = row[6]
+
+                new_area_name = f"{area_name_base}_{k+1}"
+                all_areas.append([
+                    new_area_name,
+                    str(p1 + node_offset),
+                    str(p2 + node_offset),
+                    str(p3 + node_offset),
+                    str(p4 + node_offset),
+                    sec,
+                    mat,
+                ])
+
+    nodes_full = np.array(all_nodes, dtype=float)
+    elems_full = np.array(all_elems, dtype=float)
+    areas_full = None if all_areas is None else np.array(all_areas, dtype=object)
+    return nodes_full, elems_full, areas_full
 
 
 # ---------------- Run Function ---------------- #
@@ -524,35 +623,51 @@ def run():
     if var_hypar.get():
         ret = hypar(H, Re, Ne, N)
         nodes, elements, areas_data = _unpack_geometry(ret)
-        if not _has_plottable_nodes(nodes):
+
+        # 🔁 build full umbrella from single tympan
+        nodes_full, elements_full, areas_full = _replicate_radially(
+            nodes, elements, areas_data, Ne
+        )
+
+        if not _has_plottable_nodes(nodes_full):
             messagebox.showerror(
                 "Geometry error",
                 "Hypar produced no valid XYZ coordinates. Check inputs."
             )
         else:
-            generate_and_export("Hypar", nodes, elements, areas=areas_data)
+            generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
 
     if var_pyramid.get():
         ret = pyramid(H, Re, Ne, N)
         nodes, elements, areas_data = _unpack_geometry(ret)
-        if not _has_plottable_nodes(nodes):
+
+        nodes_full, elements_full, areas_full = _replicate_radially(
+            nodes, elements, areas_data, Ne
+        )
+
+        if not _has_plottable_nodes(nodes_full):
             messagebox.showerror(
                 "Geometry error",
                 "Pyramid produced no valid XYZ coordinates. Check inputs."
             )
         else:
-            generate_and_export("Pyramid", nodes, elements, areas=areas_data)
+            generate_and_export("Pyramid", nodes_full, elements_full, areas=areas_full)
 
     if var_dome.get():
         ret = dome(H, Re, Ne, N)
         nodes, elements, areas_data = _unpack_geometry(ret)
-        if not _has_plottable_nodes(nodes):
+
+        nodes_full, elements_full, areas_full = _replicate_radially(
+            nodes, elements, areas_data, Ne
+        )
+
+        if not _has_plottable_nodes(nodes_full):
             messagebox.showerror(
                 "Geometry error",
                 "Dome produced no valid XYZ coordinates. Check inputs."
             )
         else:
-            generate_and_export("Dome", nodes, elements, areas=areas_data)
+            generate_and_export("Dome", nodes_full, elements_full, areas=areas_full)
 
 
 def quit_app():
