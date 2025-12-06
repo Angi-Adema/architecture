@@ -1,12 +1,14 @@
 # SAP2000 v20 integration used by umbrella.py
 # - Reads umbrella.xlsx structure (Nodes, Elements)
-# - Builds model in SAP2000
-# - Runs analysis (Dead self-weight)
-# - Exports results to <input>_results.xlsx
+# - Builds model in SAP2000 (one tympan)
+# - Uses SAP2000 radial replicate to build full umbrella
+# - Runs analysis (Dead self-weight, optional soil sweep)
+# - Exports model + results to <input>_results.xlsx
 
 import importlib
 import os
 import math
+import re
 import pandas as pd
 import comtypes.client as cc
 
@@ -46,17 +48,13 @@ DIR_CANDIDATES = [
 
 
 def _as_seq(x, n):
-    """Coerce COM return 'x' to a sequence of length n.
-    Handles singletons (scalar) and SAFEARRAYs that don't support len() cleanly.
-    """
+    """Coerce COM return 'x' to a sequence of length n."""
     if n is None:
         n = 0
     try:
-        # Already a list/tuple-like with length?
-        _ = len(x)  # may raise if x is scalar
+        _ = len(x)
         return list(x)
     except Exception:
-        # Not iterable -> replicate scalar n times
         return [x] * int(n)
 
 
@@ -188,15 +186,13 @@ def _start_sap2000_v20(visible=True):
             _log(f"NewBlank failed with and without metric flag: {e}")
             raise
 
-    # ---- Set units (guarded). Prefer enum; fallback to numeric 6 for v20 (kN–m–C). ----
+    # ---- Set units (guarded). Prefer enum; fallback to numeric 8 for v20 (N–m–C). ----
     try:
         if hasattr(model, "SetPresentUnits"):
             if s2k and hasattr(s2k, "eUnits_N_m_C"):
                 model.SetPresentUnits(s2k.eUnits_N_m_C)
             else:
-                # NOTE: In SAP2000 v20, numeric code 6 = kN–m–C.
-                # Fallback numeric code for v20 if enum isn't available:
-                # (On many v20 builds: 8 = N–m–C; if wrong on your build, use the enum path above.)
+                # NOTE: In SAP2000 v20, numeric code 8 = N–m–C on many builds.
                 model.SetPresentUnits(8)
         else:
             _log("SetPresentUnits not available; leaving default units.")
@@ -302,9 +298,9 @@ def _ensure_material_defined(model, spec):
         except Exception:
             pass  # ok if it already exists
 
-    # Convert inputs assuming model units = kN-m-C (as set in _start_sap2000_v20)
+    # Convert inputs assuming model units = N-m-C (as set in _start_sap2000_v20)
     E_pa = float(spec.get("E", 30e9))         # Pa (= N/m^2)
-    E_kPa = E_pa / 1000.0                     # kN/m^2
+    E_kPa = E_pa / 1000.0                     # kN/m^2 if we ever switch units
     nu = float(spec.get("nu", 0.2))
     alpha = float(spec.get("alpha", 1.0e-5))  # 1/C
 
@@ -319,7 +315,7 @@ def _ensure_material_defined(model, spec):
     # Unit weight & mass density
     gamma_Npm3 = float(spec.get("gamma", 24000.0))  # N/m^3
     gamma_kNpm3 = gamma_Npm3 / 1000.0               # kN/m^3
-    mass_kN_s2_m4 = gamma_kNpm3 / 9.80665           # (kN/m^3) / g  => consistent mass density
+    mass_kN_s2_m4 = gamma_kNpm3 / 9.80665           # consistent mass density
     try:
         model.PropMaterial.SetWeightAndMass(name, gamma_kNpm3, mass_kN_s2_m4)
     except Exception:
@@ -346,11 +342,8 @@ def _build_model_from_excel(model, nodes_df, elems_df,
     """
     Create points and frames in SAP2000 from the provided dataframes.
 
-    nodes_df columns (no headers in file; normalized before here): Name, X, Y, Z
-
-    elems_df columns (no headers in file; normalized before here): Frame, I, J, Section (opt), Material (opt)
-
-    default_section: (section_name, material_name, (b, h))
+    nodes_df columns: Name, X, Y, Z
+    elems_df columns: Frame, I, J, Section (opt), Material (opt)
     """
     sec_name, mat_name, dims = default_section
     _ensure_default_section(model, sec_name, mat_name, dims)
@@ -541,6 +534,7 @@ def _build_areas_from_excel(model, areas_df,
         except Exception:
             pass
 
+
 def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
     """
     Fix nodes at the minimum Z (within tol).
@@ -714,11 +708,8 @@ def _get_joint_xyz(model, joint_name):
 
 def _autodetect_orientation_joints(model, vertical_axis="Z"):
     """
-    Returns (apex_name, behind_name) where:
-      - apex_name  = joint with the maximum coordinate along 'vertical_axis'
-      - behind_name = nearest joint to the apex in the horizontal plane
-                      (XY if axis=Z, XZ if axis=Y, YZ if axis=X),
-                      with strictly lower 'vertical_axis' coordinate
+    Returns (apex_name, behind_name) using the "max along vertical axis"
+    rule + nearest in horizontal plane.
     """
     ax = vertical_axis.upper()
     if ax not in ("X", "Y", "Z"):
@@ -820,6 +811,10 @@ def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", rep
         for meth in ("SetLocalAxesAdvanced", "SetLocalAxes_2", "SetLocalAxesByPoints"):
             try:
                 m = getattr(area, meth)
+            except AttributeError:
+                continue
+
+            try:
                 plane_code = 3  # maps to "Plane 3-1" on many v20 builds
                 if meth == "SetLocalAxesAdvanced":
                     axis_dir = 1  # define local-1 by the vector (j1->j2)
@@ -898,6 +893,227 @@ def _iter_all_point_coords(model):
         yield nm, float(x), float(y), float(z)
 
 
+# --- new helpers for group, replication, and extracting full model --- #
+
+def _infer_ne_from_filename(xlsx_path):
+    """
+    Try to infer the number of tympans (Ne) from the input filename.
+    Expected pattern from umbrella.py:  Hypar4_H2.0_R1.0_N20.xlsx
+                                      ^^^^^
+    Returns int or None.
+    """
+    base = os.path.splitext(os.path.basename(xlsx_path))[0]
+    first = base.split("_")[0]
+    m = re.search(r"(\d+)$", first)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def _make_tympan_group_from_all(model, group_name="Tympan"):
+    """
+    Create a group containing all current objects (points, frames, areas).
+    Mirrors the Ctrl+A + Assign > Assign to Group flow.
+    """
+    # Clear if it exists
+    try:
+        model.Groups.Delete(group_name)
+    except Exception:
+        pass
+
+    # Points
+    try:
+        ret, point_names = model.PointObj.GetNameList()
+        try:
+            point_names = list(point_names)
+        except Exception:
+            point_names = [point_names]
+        for nm in point_names:
+            try:
+                model.GroupDef.SetGroupAssign("Point", nm, group_name)
+            except Exception:
+                try:
+                    model.Groups.AddJoint(nm, group_name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Frames
+    try:
+        ret, frame_names = model.FrameObj.GetNameList()
+        try:
+            frame_names = list(frame_names)
+        except Exception:
+            frame_names = [frame_names]
+        for nm in frame_names:
+            try:
+                model.GroupDef.SetGroupAssign("Frame", nm, group_name)
+            except Exception:
+                try:
+                    model.Groups.AddFrame(nm, group_name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Areas
+    try:
+        names = _get_all_area_names(model)
+        for nm in names:
+            try:
+                model.GroupDef.SetGroupAssign("Area", nm, group_name)
+            except Exception:
+                try:
+                    model.Groups.AddArea(nm, group_name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _replicate_group_radially(
+    model,
+    group_name="Tympan",
+    n_copies=3,
+    angle_deg=90.0,
+    axis="Z",
+    c_sys="Global",
+    delete_original=False,
+):
+    """
+    Emulate Edit > Replicate > Radial for a whole group.
+    This uses EditGeneral.EditReplicateRadial on the specified group if available.
+    """
+    if n_copies <= 0:
+        return
+
+    axis = axis.upper()
+
+    # Prefer the whole-group radial replicate if available (simplest & closest
+    # to the UI that already works for you).
+    try:
+        eg = getattr(model, "EditGeneral")
+        try:
+            eg.EditReplicateRadial(
+                1,                 # NumberItems (ignored when using GroupName)
+                0,                 # ObjectType (ignored)
+                "",                # ObjectName (ignored)
+                int(n_copies),
+                0.0, 0.0, 0.0,     # origin at (0,0,0)
+                float(angle_deg),  # RotationAngle per copy
+                str(c_sys),
+                True,              # IsRadial
+                bool(delete_original),
+                str(group_name),
+            )
+            return
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Fallback: if we can't do radial replicate through the API,
+    # we leave a single tympan but keep a valid model.
+    _log("[WARN] Could not perform radial replication via API; leaving single tympan.")
+
+
+def _iter_all_frames(model):
+    """
+    Yield (name, I, J, Section) for all frame objects.
+    """
+    try:
+        ret, names = model.FrameObj.GetNameList()
+    except Exception:
+        return []
+    try:
+        names = list(names)
+    except Exception:
+        names = [names]
+    for nm in names:
+        i_pt = j_pt = None
+        sec = None
+        try:
+            ret, i_pt, j_pt = model.FrameObj.GetPoints(nm)
+        except Exception:
+            pass
+        try:
+            ret, sec = model.FrameObj.GetSection(nm)
+        except Exception:
+            try:
+                ret, sec = model.FrameObj.GetProperty(nm)
+            except Exception:
+                sec = None
+        yield nm, i_pt, j_pt, sec
+
+
+def _iter_all_areas(model):
+    """
+    Yield (name, [points...], section) for all area objects.
+    """
+    for an in _get_all_area_names(model):
+        pts = []
+        sec = None
+        try:
+            ret, num_pts, names = model.AreaObj.GetPoints(an)
+            names = _as_seq(names, num_pts)
+            pts = [str(nm) for nm in names[: int(num_pts)]]
+        except Exception:
+            pts = []
+        try:
+            ret, sec = model.AreaObj.GetProperty(an)
+        except Exception:
+            sec = None
+        yield an, pts, sec
+
+
+def _extract_model_to_dfs(model):
+    """
+    After SAP2000 has built (and possibly replicated) the model, pull out
+    full Nodes/Elements/Areas tables so the results workbook matches the
+    actual umbrella geometry.
+    """
+    # Nodes
+    node_rows = []
+    for nm, x, y, z in _iter_all_point_coords(model):
+        node_rows.append({"Name": str(nm), "X": x, "Y": y, "Z": z})
+    nodes_df = pd.DataFrame(node_rows)
+
+    # Frames
+    frame_rows = []
+    for nm, i_pt, j_pt, sec in _iter_all_frames(model):
+        frame_rows.append({
+            "Frame": str(nm),
+            "I": str(i_pt) if i_pt is not None else "",
+            "J": str(j_pt) if j_pt is not None else "",
+            "Section": sec,
+            "Material": None,
+        })
+    elems_df = pd.DataFrame(frame_rows)
+
+    # Areas
+    area_rows = []
+    for an, pts, sec in _iter_all_areas(model):
+        row = {
+            "Area": str(an),
+            "P1": pts[0] if len(pts) > 0 else None,
+            "P2": pts[1] if len(pts) > 1 else None,
+            "P3": pts[2] if len(pts) > 2 else None,
+            "P4": pts[3] if len(pts) > 3 else None,
+            "Section": sec,
+            "Material": None,
+        }
+        area_rows.append(row)
+    areas_df = pd.DataFrame(area_rows)
+
+    return nodes_df, elems_df, areas_df
+
+
+# ---------------- Soil / pattern automation ---------------- #
+
 def _assign_area_surface_pressure_by_joint_pattern(
     model,
     area_name,
@@ -952,13 +1168,6 @@ def sweep_soil_pressure_by_depth(
     Sweep soil pressure by depth (0.5 m steps by default) and collect results.
     Assigns Area Loads -> Surface Pressure -> By Joint Pattern using a joint-pattern
     whose value is the local depth (or normalized depth) at each joint.
-
-    If normalize_pattern:
-        pattern_value = (min(raw_depth, d) / d)   # 0..1
-        multiplier    = gamma * d                 # N/m^2 at step depth d
-    else:
-        pattern_value = min(raw_depth, d)         # meters
-        multiplier    = gamma                     # N/m^3
     """
     # ---- Input guards ----
     if depth_step <= 0:
@@ -1101,30 +1310,34 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     _ensure_openpyxl()
 
-    nodes = _read_nodes_sheet(input_xlsx)
-    elems = _read_elements_sheet(input_xlsx)
+    # ---- read Excel (single tympan) ----
+    nodes_in = _read_nodes_sheet(input_xlsx)
+    elems_in = _read_elements_sheet(input_xlsx)
 
     # Debug: print bounding box
     _log(
         "Bounds:",
-        f"X [{nodes['X'].min()}, {nodes['X'].max()}], "
-        f"Y [{nodes['Y'].min()}, {nodes['Y'].max()}], "
-        f"Z [{nodes['Z'].min()}, {nodes['Z'].max()}]"
+        f"X [{nodes_in['X'].min()}, {nodes_in['X'].max()}], "
+        f"Y [{nodes_in['Y'].min()}, {nodes_in['Y'].max()}], "
+        f"Z [{nodes_in['Z'].min()}, {nodes_in['Z'].max()}]"
     )
 
     # ---- validate required sheets before doing anything else ----
-    if nodes.empty:
+    if nodes_in.empty:
         raise ValueError("Nodes sheet is empty.")
-    if elems.empty:
+    if elems_in.empty:
         raise ValueError("Elements sheet is empty.")
 
     # Try to read Areas (quietly skip if the sheet isn't present)
     try:
-        areas = _read_areas_sheet(input_xlsx)
-        if areas is not None and areas.empty:
-            areas = None
+        areas_in = _read_areas_sheet(input_xlsx)
+        if areas_in is not None and areas_in.empty:
+            areas_in = None
     except Exception:
-        areas = None
+        areas_in = None
+
+    # Infer Ne (number of tympans) from filename, default to 4
+    Ne_inferred = _infer_ne_from_filename(input_xlsx) or 4
 
     sap, model = _start_sap2000_v20(visible=visible)
     try:
@@ -1134,21 +1347,21 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         # Build frames with default section that uses the chosen material
         _build_model_from_excel(
-            model, nodes, elems,
+            model, nodes_in, elems_in,
             default_section=("RECT_300x500", default_mat, (0.30, 0.50))
         )
 
         # Build areas (shells) with default shell property that uses the chosen material
-        if areas is not None:
+        if areas_in is not None:
             _build_areas_from_excel(
-                model, areas,
+                model, areas_in,
                 default_section=("SHELL_200", default_mat, 0.20)
             )
 
             # --- ORIENT USING LABEL CONVENTION: vertex = 1, opposite = E+3 ---
             try:
                 # nodes_tot = (E + 1)^2  →  E = sqrt(nodes_tot) - 1
-                nodes_tot = len(nodes)
+                nodes_tot = len(nodes_in)
                 E = int(round(nodes_tot ** 0.5)) - 1
                 behind_name = str(E + 3)
 
@@ -1157,6 +1370,23 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 # Fallback to the historical 1 & 23 convention
                 _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True)
 
+        # --- replicate tympan radially inside SAP2000, if Ne>1 ---
+        if Ne_inferred and Ne_inferred > 1:
+            _make_tympan_group_from_all(model, "Tympan")
+            _replicate_group_radially(
+                model,
+                group_name="Tympan",
+                n_copies=max(0, Ne_inferred - 1),
+                angle_deg=360.0 / float(Ne_inferred),
+                axis="Z",
+                c_sys="Global",
+                delete_original=False,
+            )
+
+        # After any replication, pull full geometry back out of SAP
+        nodes, elems, areas = _extract_model_to_dfs(model)
+
+        # Fix supports using full umbrella nodes
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
@@ -1228,11 +1458,11 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         _ensure_xlsxwriter()
 
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
-            # Always write model definition sheets
+            # Always write model definition sheets (full umbrella geometry)
             nodes.to_excel(xlw, sheet_name="Nodes", index=False)
             elems.to_excel(xlw, sheet_name="Elements", index=False)
 
-            if areas is not None:
+            if areas is not None and not areas.empty:
                 areas.to_excel(xlw, sheet_name="Areas", index=False)
 
             if not disp_df.empty:
@@ -1274,12 +1504,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     dtag = f"d{str(depth_val).replace('.', '_')}"
                     ddf.to_excel(xlw, sheet_name=f"SoilDisp_{dtag}", index=False)
 
+        num_areas = 0 if areas is None else len(areas)
+
         return {
             "model_path": sdb_path,
             "results_path": results_xlsx,
             "num_nodes": len(nodes),
             "num_frames": len(elems),
-            "num_areas": (0 if areas is None else len(areas)),
+            "num_areas": num_areas,
             "disp_rows": 0 if disp_df.empty else len(disp_df),
             "force_rows": 0 if force_df.empty else len(force_df),
         }
