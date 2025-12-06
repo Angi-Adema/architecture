@@ -1,68 +1,57 @@
+import math
 import numpy as np
 
-# Eliminated the hardcoded values because in umbrella.py, when the user hits Run,
-# the values entered by the user are dynamically passed into the geometry functions.
 
 def hypar(H, Re, Ne, N):
     """
-    Generate a FULL hypar umbrella as:
-      - nod_ij: [node_id, x, y, z] for all tympans
-      - ele_ij: [frame_id, I, J, Section, Material] for frame elements
-      - areas_data: [AreaName, P1, P2, P3, P4, Section, Material] for shell areas
+    Generate a full umbrella of hypar tympans.
 
-    H  = apothem length
-    Re = rise
-    Ne = number of sides (number of tympans around the umbrella)
-    N  = number of elements along the apothem
+    Returns:
+        nodes_full : (num_nodes, 4) array
+            [Name, X, Y, Z]
+        frames_full : (num_frames, 5) array
+            [Frame, I, J, Section, Material]   (Section/Material left as NaN for defaults)
+        areas_full : (num_areas, 5) array
+            [Area, P1, P2, P3, P4]  (no section/material here; umbrella/run_sap2000 sets defaults)
     """
-
-    psi = np.pi / Ne
-
-    # ---------- helper functions for original hypar geometry ---------- #
+    psi = math.pi / Ne  # half sector angle
 
     def get_z(xp, yp):
-        delta_y = (H - xp) * np.sin(2 * psi) + xp * np.tan(psi)
-        delta_x = (H - xp) * np.cos(2 * psi)
-        z = Re * (1 - xp / H) * yp / np.sqrt(delta_x ** 2 + delta_y ** 2) + Re * xp / H
-        return z
+        delta_y = (H - xp) * math.sin(2 * psi) + xp * math.tan(psi)
+        delta_x = (H - xp) * math.cos(2 * psi)
+        return Re * (1 - xp / H) * yp / math.sqrt(delta_x ** 2 + delta_y ** 2) + Re * xp / H
 
     def get_K(xp):
-        delta_y = (H - xp) * np.sin(2 * psi) + xp * np.tan(psi)
-        delta_x = (H - xp) * np.cos(2 * psi)
-        psi_c = np.arctan(delta_x / delta_y)
-        K = xp * np.sin(psi) / np.sin(np.pi / 2 - psi - psi_c)
-        return K
+        delta_y = (H - xp) * math.sin(2 * psi) + xp * math.tan(psi)
+        delta_x = (H - xp) * math.cos(2 * psi)
+        psi_c = math.atan(delta_x / delta_y)
+        return xp * math.sin(psi) / math.sin(math.pi / 2 - psi - psi_c)
 
     def get_xy(xp, yp):
-        delta_y = (H - xp) * np.sin(2 * psi) + xp * np.tan(psi)
-        delta_x = (H - xp) * np.cos(2 * psi)
-        y = yp / np.sqrt(1 + (delta_x / delta_y) ** 2)
+        delta_y = (H - xp) * math.sin(2 * psi) + xp * math.tan(psi)
+        delta_x = (H - xp) * math.cos(2 * psi)
+        y = yp / math.sqrt(1 + (delta_x / delta_y) ** 2)
         x = xp + y * (delta_x / delta_y)
         return x, y
 
     def sym(x, y):
-        theta = psi - np.arctan(y / x)
-        xr = x * np.cos(2 * theta) - y * np.sin(2 * theta)
-        yr = x * np.sin(2 * theta) + y * np.cos(2 * theta)
+        # Reflect about the sector bisector
+        theta = psi - math.atan2(y, x)
+        xr = x * math.cos(2 * theta) - y * math.sin(2 * theta)
+        yr = x * math.sin(2 * theta) + y * math.cos(2 * theta)
         return xr, yr
 
-    def rotate(x, y, theta, n):
-        xr = x * np.cos(theta * n) - y * np.sin(theta * n)
-        yr = x * np.sin(theta * n) + y * np.cos(theta * n)
-        return xr, yr
-
-    # ---------- geometry for ONE tympan (original indexing) ---------- #
-
-    xp_base_i = np.linspace(0, H, N + 1)
+    # ------------------------------------------------------------------
+    # 1) Base tympan (single sector) – exactly your original logic
+    # ------------------------------------------------------------------
+    xp_base_i = np.linspace(0.0, H, N + 1)
     xp_index_i = np.linspace(0, N, N + 1)
 
-    nodes_tot_single = int((N + 1) ** 2)
+    nodes_tot = (N + 1) ** 2
+    xp_i = np.zeros(nodes_tot)
+    index_i = np.zeros(nodes_tot)
 
-    xp_i = np.zeros(nodes_tot_single)
-    index_i = np.zeros(nodes_tot_single)
     n = 0
-
-    # Reproduce the original column-based construction
     for col in range(N + 1):
         for i in range(col + 1):
             xp_base_i[i] = xp_base_i[int(xp_index_i[col])]
@@ -72,117 +61,106 @@ def hypar(H, Re, Ne, N):
             index_i[n] = xp_index_i[s]
             n += 1
 
-    yp_i = np.zeros(nodes_tot_single)
+    yp_i = np.zeros(nodes_tot)
     n = 0
     for col in range(N + 1):
         for i in range(N + 1):
             index = min(i, col)
-            yp_i[n] = np.linspace(0, get_K(xp_i[n]), int(index_i[n] + 1))[int(index)]
+            yp_i[n] = np.linspace(0.0, get_K(xp_i[n]), int(index_i[n] + 1))[int(index)]
             n += 1
 
-    # (x,y,z) before symmetry
-    nodes_ij = np.array(
-        [get_xy(xp_i[i], yp_i[i]) + (get_z(xp_i[i], yp_i[i]),)
-         for i in range(nodes_tot_single)]
-    ).T  # shape (3, nodes_tot_single)
+    xs, ys, zs = [], [], []
+    for i in range(nodes_tot):
+        x, y = get_xy(float(xp_i[i]), float(yp_i[i]))
+        z = get_z(float(xp_i[i]), float(yp_i[i]))
+        xs.append(x)
+        ys.append(y)
+        zs.append(z)
+    nodes_ij = np.vstack([xs, ys, zs])
 
-    # Mirror inside each column
-    nodes_mod_ij = np.copy(nodes_ij)
+    # Symmetrize within the sector
+    nodes_mod = nodes_ij.copy()
     for col in range(N + 1):
         for i in range(N + 1):
             if i < col:
-                index = int(i + (N + 1) * col)
-                xr, yr = sym(nodes_ij[0][index], nodes_ij[1][index])
-                nodes_mod_ij[0][index] = xr
-                nodes_mod_ij[1][index] = yr
+                idx = int(i + (N + 1) * col)
+                xr, yr = sym(nodes_ij[0, idx], nodes_ij[1, idx])
+                nodes_mod[0, idx] = xr
+                nodes_mod[1, idx] = yr
 
-    # Rotate tympan to final orientation
-    nodes_rot_ij = np.zeros((3, nodes_tot_single))
-    for i in range(nodes_tot_single):
-        x, y = rotate(nodes_mod_ij[0][i], nodes_mod_ij[1][i], -psi, 1)
-        nodes_rot_ij[:, i] = [x, y, nodes_mod_ij[2][i]]
+    # Rotate by -psi so sector is centered
+    cosA, sinA = math.cos(-psi), math.sin(-psi)
+    nodes_rot = np.zeros_like(nodes_mod)
+    for i in range(nodes_tot):
+        x, y, z = nodes_mod[:, i]
+        nodes_rot[0, i] = x * cosA - y * sinA
+        nodes_rot[1, i] = x * sinA + y * cosA
+        nodes_rot[2, i] = z
 
-    # Pack single-tympan nodes as [id, x, y, z]
-    single_nodes = np.zeros((nodes_tot_single, 4))
-    for n in range(nodes_tot_single):
-        single_nodes[n] = [n + 1, nodes_rot_ij[0][n], nodes_rot_ij[1][n], nodes_rot_ij[2][n]]
+    # Base node table (single tympan)
+    base_nodes = np.zeros((nodes_tot, 4), dtype=float)
+    for i in range(nodes_tot):
+        base_nodes[i] = [i + 1, nodes_rot[0, i], nodes_rot[1, i], nodes_rot[2, i]]
 
-    # ---- original quad indexing for ONE tympan (area mesh) ---- #
-    ele_num_single = int(N ** 2)
-    single_quads = np.zeros((ele_num_single, 5), dtype=int)
-    n = 0
+    # Base quad connectivity as AREAS: [Area, P1, P2, P3, P4]
+    base_areas = np.zeros((N ** 2, 5), dtype=int)
+    eid = 1
     for col in range(N):
         for row in range(N):
-            # This matches your original ele_ij indexing
-            p1 = int(col + 1 + (N) * col + row)
-            p2 = int(p1 + N + 1)
-            p3 = int(p2 + 1)
-            p4 = int(p1 + 1)
+            base = int(col + 1 + N * col + row)
+            base_areas[eid - 1] = [eid, base, base + N + 1, base + N + 2, base + 1]
+            eid += 1
 
-            single_quads[n, 0] = n + 1   # area/element ID (within this tympan)
-            single_quads[n, 1] = p1
-            single_quads[n, 2] = p2
-            single_quads[n, 3] = p3
-            single_quads[n, 4] = p4
-            n += 1
-
-    # ---------- replicate tympan Ne times around Z (nodes + quads) ---------- #
+    # ------------------------------------------------------------------
+    # 2) Replicate the base tympan Ne times around Z (umbrella)
+    # ------------------------------------------------------------------
+    n_nodes = nodes_tot
+    n_areas = base_areas.shape[0]
 
     all_nodes = []
-    all_quads = []
+    all_areas = []
 
-    nodes_per_tympan = single_nodes.shape[0]
-    quads_per_tympan = single_quads.shape[0]
+    for sector in range(Ne):
+        angle = 2.0 * psi * sector   # 0, 2ψ, 4ψ, ... (for Ne=4 -> 0, 90, 180, 270)
+        cosR, sinR = math.cos(angle), math.sin(angle)
 
-    node_offset = 0
-    quad_offset = 0
+        # rotate nodes
+        for i in range(n_nodes):
+            node_id = sector * n_nodes + int(base_nodes[i, 0])
+            x, y, z = base_nodes[i, 1:4]
+            xr = x * cosR - y * sinR
+            yr = x * sinR + y * cosR
+            all_nodes.append([node_id, xr, yr, z])
 
-    for k in range(Ne):
-        angle = 2.0 * np.pi * k / Ne
-        cos_a = np.cos(angle)
-        sin_a = np.sin(angle)
+        # copy areas with node index offset
+        for j in range(n_areas):
+            area_id, p1, p2, p3, p4 = base_areas[j]
+            area_id = sector * n_areas + area_id
+            offset = sector * n_nodes
+            all_areas.append([
+                area_id,
+                int(p1) + offset,
+                int(p2) + offset,
+                int(p3) + offset,
+                int(p4) + offset,
+            ])
 
-        # Rotate nodes for tympan k
-        for row in single_nodes:
-            old_id, x, y, z = row
-            x_r = x * cos_a - y * sin_a
-            y_r = x * sin_a + y * cos_a
-            new_id = node_offset + int(old_id)
-            all_nodes.append([new_id, x_r, y_r, z])
+    nodes_full = np.asarray(all_nodes, dtype=float)
+    areas_full = np.asarray(all_areas, dtype=int)
 
-        # Replicate quads with updated node IDs
-        for row in single_quads:
-            local_qid, p1, p2, p3, p4 = row
-            new_qid = quad_offset + local_qid
-            new_p1 = node_offset + p1
-            new_p2 = node_offset + p2
-            new_p3 = node_offset + p3
-            new_p4 = node_offset + p4
-            all_quads.append([new_qid, new_p1, new_p2, new_p3, new_p4])
-
-        node_offset += nodes_per_tympan
-        quad_offset += quads_per_tympan
-
-    nod_ij = np.array(all_nodes, dtype=float)
-    all_quads = np.array(all_quads, dtype=int)
-
-    # ---------- build UNIQUE frame elements from quad edges ---------- #
-
+    # ------------------------------------------------------------------
+    # 3) Build FRAME elements as unique edges of all quads
+    # ------------------------------------------------------------------
     edges = set()
-    for _, p1, p2, p3, p4 in all_quads:
-        quad_nodes = [int(p1), int(p2), int(p3), int(p4)]
-        for i in range(4):
-            a = quad_nodes[i]
-            b = quad_nodes[(i + 1) % 4]
+    for _, p1, p2, p3, p4 in areas_full:
+        for a, b in ((p1, p2), (p2, p3), (p3, p4), (p4, p1)):
             if a == b:
                 continue
-            key = tuple(sorted((a, b)))
+            key = tuple(sorted((int(a), int(b))))
             edges.add(key)
 
-    edges = sorted(edges)
-    ele_ij = np.zeros((len(edges), 5), dtype=float)
-    for idx, (i_node, j_node) in enumerate(edges, start=1):
-        ele_ij[idx - 1] = [idx, i_node, j_node, 1, 1]  # Section=1, Material=1 (placeholders)
+    frames_full = np.zeros((len(edges), 5), dtype=float)
+    for fid, (i, j) in enumerate(sorted(edges), start=1):
+        frames_full[fid - 1] = [fid, i, j, math.nan, math.nan]
 
-    # ---------- Areas data for SAP2000 (for shell mesh) ---------- #
-    # Format: [AreaName, P1, P2, P3, P4, Section, Material]
+    return nodes_full, frames_full, areas_full

@@ -367,13 +367,13 @@ def run():
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
         # Validate Areas vs Nodes before writing file/SAP run
+        # just before writing the workbook
         try:
-            if areas:
+            if areas is not None and len(areas) > 0:
                 validate_areas_against_nodes(areas, nodes_arr)
         except ValueError as e:
             messagebox.showerror("Areas validation", str(e))
-            return
-
+            return  
         with xlsxwriter.Workbook(filepath, {'nan_inf_to_errors': True}) as wb:
             ws_nodes = wb.add_worksheet('Nodes')
             for i, row in enumerate(nodes_arr):
@@ -389,12 +389,11 @@ def run():
                     val = row[j] if j < len(row) else None
                     ws_elements.write(i, j, val)
 
-            if areas:
+            if areas is not None and len(areas) > 0:
                 ws_areas = wb.add_worksheet('Areas')
                 for i, row in enumerate(areas):
                     for j, val in enumerate(row):
-                        ws_areas.write(i, j, val)
-
+                        ws_areas.write(i, j, val)   
         print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
 
         # Open the folder automatically on Windows (only once per Run)
