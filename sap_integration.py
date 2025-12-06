@@ -674,28 +674,28 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
 def _get_all_area_names(model):
     """
     Returns list of all area (shell) object names.
-    API calls (names may vary slightly by version):
-      - model.AreaObj.Count()
-      - model.AreaObj.GetNameList()
+
+    Handles both (ret, names) and (ret, count, names) signatures.
     """
     try:
-        ret, n_areas = model.AreaObj.Count()
-        if int(n_areas) == 0:
-            return []
-        ret, names = model.AreaObj.GetNameList()
-        try:
-            return list(names)
-        except Exception:
-            return [names]
+        out = model.AreaObj.GetNameList()
     except Exception:
-        try:
-            ret, names = model.AreaObj.GetNameList()
-            try:
-                return list(names)
-            except Exception:
-                return [names]
-        except Exception:
-            return []
+        return []
+
+    if isinstance(out, tuple):
+        if len(out) == 2:
+            _, names = out
+        elif len(out) == 3:
+            _, _, names = out
+        else:
+            names = out[-1]
+    else:
+        names = out
+
+    try:
+        return list(names)
+    except Exception:
+        return [names]
 
 
 def _get_joint_xyz(model, joint_name):
@@ -879,17 +879,41 @@ def _set_joint_pattern_value_for_point(model, joint_name, pattern_name, value):
 def _iter_all_point_coords(model):
     """
     Yield (name, x, y, z) for all joints in the model.
+
+    Handles both 2-tuple and 3-tuple signatures of GetNameList:
+      (ret, names)           or
+      (ret, number_names, names)
     """
-    ret, names = model.PointObj.GetNameList()
+    out = model.PointObj.GetNameList()
+    # out may be (ret, names) or (ret, n, names)
+    if isinstance(out, tuple):
+        if len(out) == 2:
+            _, names = out
+        elif len(out) == 3:
+            _, _, names = out
+        else:
+            names = out[-1]
+    else:
+        names = out
+
     try:
         names = list(names)
     except Exception:
         names = [names]
+
     for nm in names:
         try:
-            ret, x, y, z = model.PointObj.GetCoordCartesian(nm, "Global")
+            out_coord = model.PointObj.GetCoordCartesian(nm, "Global")
         except Exception:
-            ret, x, y, z = model.PointObj.GetCoordCartesian(nm)
+            out_coord = model.PointObj.GetCoordCartesian(nm)
+
+        # out_coord can be (ret, x, y, z) or sometimes longer;
+        # we always grab the last three as x, y, z.
+        if isinstance(out_coord, tuple) and len(out_coord) >= 4:
+            x, y, z = out_coord[-3], out_coord[-2], out_coord[-1]
+        else:
+            _, x, y, z = out_coord
+
         yield nm, float(x), float(y), float(z)
 
 
