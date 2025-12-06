@@ -287,18 +287,52 @@ Checkbutton(
 
 def _unpack_geometry(ret):
     """
-    Accepts either (nodes, elements) or (nodes, elements, areas_data)
-    and always returns (nodes, elements, areas_data_or_None).
+    Normalize geometry return value to (nodes, elements, areas).
+
+    - If the geometry function returns (nodes, elements, areas) already,
+      we just pass them through.
+    - If it returns (nodes, elements) like the original hypar.py, we treat
+      'elements' as the quad connectivity and auto-build an Areas table
+      for SAP2000.
     """
-    if isinstance(ret, (list, tuple)) and len(ret) == 3:
-        return ret[0], ret[1], ret[2]
-    elif isinstance(ret, (list, tuple)) and len(ret) == 2:
-        return ret[0], ret[1], None
-    else:
-        raise ValueError(
-            "Geometry function must return (nodes, elements) or "
-            "(nodes, elements, areas_data)."
-        )
+    import numpy as np
+
+    if not isinstance(ret, tuple):
+        raise ValueError("Geometry function must return a tuple.")
+
+    # New-style: (nodes, elements, areas)
+    if len(ret) == 3:
+        nodes, elements, areas = ret
+        return nodes, elements, areas
+
+    # Original-style: (nodes, elements) where 'elements' is [id, P1, P2, P3, P4]
+    if len(ret) == 2:
+        nodes, elements = ret
+
+        elems_arr = np.asarray(elements, dtype=float)
+        areas_rows = []
+        for row in elems_arr:
+            # row: [AreaId, P1, P2, P3, P4]
+            area_id = int(row[0])
+            p1 = int(row[1])
+            p2 = int(row[2])
+            p3 = int(row[3])
+            p4 = int(row[4])
+            area_name = str(area_id)
+
+            # Area row layout for our Excel writer:
+            # [AreaName, P1, P2, P3, P4, Section, Material]
+            areas_rows.append([
+                area_name,
+                str(p1), str(p2), str(p3), str(p4),
+                "SHELL_200",   # default shell property name
+                "CONC40",      # default material name
+            ])
+
+        areas = np.array(areas_rows, dtype=object)
+        return nodes, elements, areas
+
+    raise ValueError(f"Unexpected geometry return length: {len(ret)}")
 
 
 def _has_plottable_nodes(nodes) -> bool:
