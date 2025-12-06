@@ -56,30 +56,45 @@ def _normalize_point_name(v):
 def validate_areas_against_nodes(areas, nodes):
     """
     Ensure P1..P4 (if given) are valid node names from the Nodes sheet.
-    Works whether `areas` is a list of rows or a NumPy array.
+    Works whether `areas` is a list of rows or a NumPy array and whether
+    IDs are stored as 1, 1.0, "1", etc.
     """
     if areas is None:
         return
 
     # Normalize to a NumPy array for safe size/iteration
     areas_arr = np.asarray(areas, dtype=object)
-
-    # If there are no rows, nothing to validate
     if areas_arr.size == 0:
         return
 
+    def _canon(v):
+        """Canonicalize a node/point ID so 1, 1.0, '1' all become '1'."""
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        try:
+            f = float(s)
+            if np.isnan(f):
+                return None
+            # treat any numeric ID as an integer string
+            return str(int(round(f)))
+        except Exception:
+            # non-numeric: just return trimmed string
+            return s
+
     # Nodes rows: [Name, X, Y, Z]
-    node_names = {str(r[0]) for r in nodes}
+    node_names = {_canon(r[0]) for r in nodes}
 
     # Each area row: [AreaName, P1, P2, P3, P4?, Section?, Material?]
     for idx, row in enumerate(areas_arr, start=1):
         for p in row[1:5]:  # P1..P4
-            if p in (None, ""):
+            cp = _canon(p)
+            if cp is None:
                 continue
-            if str(p) not in node_names:
-                raise ValueError(
-                    f"Areas row {idx}: point '{p}' not found in Nodes."
-                )
+            if cp not in node_names:
+                raise ValueError(f"Areas row {idx}: point '{p}' not found in Nodes.")
 
 
 # ---------------- Setup Paths (dev & PyInstaller) ---------------- #
