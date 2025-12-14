@@ -521,20 +521,19 @@ def run():
             LAST_FIG = fig
         except Exception:
             LAST_FIG = None  # skip preview if anything goes wrong
-
         # Write Excel workbook (treat NaN/Inf as Excel errors)
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
         # Validate Areas vs Nodes before writing file/SAP run
-        # just before writing the workbook
         try:
             if areas is not None and len(areas) > 0:
                 validate_areas_against_nodes(areas, nodes_arr)
         except ValueError as e:
             messagebox.showerror("Areas validation", str(e))
-            return  
+            return
         with xlsxwriter.Workbook(filepath, {'nan_inf_to_errors': True}) as wb:
+            # ---------------- Nodes ----------------
             ws_nodes = wb.add_worksheet('Nodes')
             for i, row in enumerate(nodes_arr):
                 # [Name, X, Y, Z]
@@ -542,18 +541,30 @@ def run():
                 ws_nodes.write(i, 1, row[1])  # X
                 ws_nodes.write(i, 2, row[2])  # Y
                 ws_nodes.write(i, 3, row[3])  # Z
-
+            # ---------------- Elements ----------------
+            # IMPORTANT FIX:
+            # If we're providing Areas (shells), we do NOT want to also create
+            # frames from the quad connectivity. That was causing the “lines /
+            # zigzags” artifacts.
             ws_elements = wb.add_worksheet('Elements')
-            for i, row in enumerate(elements_arr):
-                for j in range(5):  # Frame, I, J, Section, Material
-                    val = row[j] if j < len(row) else None
-                    ws_elements.write(i, j, val)
 
-            if areas is not None and len(areas) > 0:
+            has_areas = (areas is not None and len(areas) > 0)
+
+            if not has_areas:
+                # Only write Elements when you truly intend to create frames.
+                # Expected layout: [FrameName, I, J, Section, Material]
+                for i, row in enumerate(elements_arr):
+                    for j in range(5):
+                        val = row[j] if j < len(row) else None
+                        ws_elements.write(i, j, val)
+            else:
+                pass
+            # ---------------- Areas ----------------
+            if has_areas:
                 ws_areas = wb.add_worksheet('Areas')
                 for i, row in enumerate(areas):
                     for j, val in enumerate(row):
-                        ws_areas.write(i, j, val)   
+                        ws_areas.write(i, j, val)
         print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
 
         # Open the folder automatically on Windows (only once per Run)
@@ -564,7 +575,6 @@ def run():
             except Exception:
                 pass
             opened_dir = True
-
         # Build specs from GUI
         soil_spec = {
             "depth_min": depth_min_var.get(),
