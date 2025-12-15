@@ -525,11 +525,11 @@ def run():
             ws_nodes.write_row(0, 0, ["Name", "X", "Y", "Z"])  # OK (reader skips)
 
             for i, row in enumerate(nodes_arr, start=1):
-                ws_nodes.write(i, 0, row[0])  # Name / NodeID
-                ws_nodes.write(i, 1, row[1])  # X
-                ws_nodes.write(i, 2, row[2])  # Y
-                ws_nodes.write(i, 3, row[3])  # Z
-
+                node_id = _normalize_point_name(row[0])   # <-- ADD THIS
+                ws_nodes.write(i, 0, node_id)              # <-- USE IT HERE
+                ws_nodes.write(i, 1, row[1])               # X
+                ws_nodes.write(i, 2, row[2])               # Y
+                ws_nodes.write(i, 3, row[3])               # Z
             # ---------------- Elements ----------------
             # IMPORTANT: if shell model uses Areas, Elements must be truly empty
             ws_elements = wb.add_worksheet('Elements')
