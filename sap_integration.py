@@ -209,22 +209,29 @@ def _start_sap2000_v20(visible=True):
     return sap, model
 
 
-def _read_nodes_sheet(xlsx_path):
-    """
-    umbrella.py writes 'Nodes' without headers:
-      col 0 = Name, col 3 = X, col 4 = Y, col 6 = Z
-    Fallback to compact 4-col layout [Name, X, Y, Z] if needed.
-    """
-    df = pd.read_excel(xlsx_path, sheet_name="Nodes", header=None)
-    name_col, x_col, y_col, z_col = 0, 3, 4, 6
-    if df.shape[1] <= 4:
-        name_col, x_col, y_col, z_col = 0, 1, 2, 3
-    return pd.DataFrame({
-        "Name": df.iloc[:, name_col].astype(str),
+def _read_nodes_sheet(input_xlsx):
+    df = pd.read_excel(input_xlsx, sheet_name="Nodes", header=None)
+
+    # If first row looks like headers, drop it
+    first_row = df.iloc[0].astype(str).str.strip().str.lower().tolist()
+    # common header patterns
+    if ("x" in first_row and "y" in first_row and "z" in first_row) or ("name" in first_row):
+        df = df.iloc[1:].reset_index(drop=True)
+
+    # Now proceed with your existing column detection logic
+    # (assuming Name, X, Y, Z are the first 4 columns)
+    name_col, x_col, y_col, z_col = 0, 1, 2, 3
+
+    out = pd.DataFrame({
+        "Name": df.iloc[:, name_col].astype(str).str.strip(),
         "X": df.iloc[:, x_col].astype(float),
         "Y": df.iloc[:, y_col].astype(float),
         "Z": df.iloc[:, z_col].astype(float),
     })
+
+    # Optionally drop blank names
+    out = out[out["Name"].notna() & (out["Name"] != "")]
+    return out
 
 
 def _read_elements_sheet(xlsx_path):
