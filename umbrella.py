@@ -552,12 +552,17 @@ def run():
         with xlsxwriter.Workbook(filepath, {'nan_inf_to_errors': True}) as wb:
             # ---------------- Nodes ----------------
             ws_nodes = wb.add_worksheet('Nodes')
-            for i, row in enumerate(nodes_arr):
-                # [Name, X, Y, Z]
+
+            # Header row (IMPORTANT for sap_integration pandas reader)
+            ws_nodes.write_row(0, 0, ["Name", "X", "Y", "Z"])
+
+            # Data starts on row 1
+            for i, row in enumerate(nodes_arr, start=1):
                 ws_nodes.write(i, 0, row[0])  # Name
                 ws_nodes.write(i, 1, row[1])  # X
                 ws_nodes.write(i, 2, row[2])  # Y
                 ws_nodes.write(i, 3, row[3])  # Z
+                
             # ---------------- Elements ----------------
             # IMPORTANT FIX:
             # If we're providing Areas (shells), we do NOT want to also create
@@ -577,10 +582,14 @@ def run():
             # ---------------- Areas ----------------
             if has_areas:
                 ws_areas = wb.add_worksheet('Areas')
-                for i, row in enumerate(areas):
+
+                # Header row (IMPORTANT)
+                ws_areas.write_row(0, 0, ["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
+
+                # Data starts on row 1
+                for i, row in enumerate(areas, start=1):
                     for j, val in enumerate(row):
                         ws_areas.write(i, j, val)
-        print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
 
         # Open the folder automatically on Windows (only once per Run)
         nonlocal opened_dir
