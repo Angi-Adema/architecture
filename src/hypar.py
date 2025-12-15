@@ -94,25 +94,31 @@ def hypar(H, Re, Ne, N):
         x, y = rotate(nodes_mod_ij[0][i], nodes_mod_ij[1][i], -psi_local, 1)
         nodes_rot_ij[:, i] = [x, y, nodes_mod_ij[2][i]]
 
-    # ---------------- elements (quad connectivity for ONE tympan) ---------------- #
-    ele_num = int(N**2)
-    ele_ij = np.zeros((ele_num, 5), dtype=int)
-    e = 0
-    for col in range(N):
-        for row in range(N):
-            base = int(col + 1 + (N) * col + row)
+        # ---------------- elements (quad connectivity for ONE tympan) ---------------- #
+        ele_num = int(N**2)
+        ele_ij = np.zeros((ele_num, 5), dtype=int)
+        e = 0
+        for col in range(N):
+            for row in range(N):
+                # node id at (col, row) in an (N+1)x(N+1) grid:
+                # id = col*(N+1) + row + 1
+                base = int(col * (N + 1) + row + 1)
             # [ElemID, P1, P2, P3, P4]
-            ele_ij[e] = [e + 1, base, base + N + 1, base + N + 2, base + 1]
+            # Consistent winding for a quad:
+            # (col,row) -> (col+1,row) -> (col+1,row+1) -> (col,row+1)
+            ele_ij[e] = [e + 1, base, base + (N + 1), base + (N + 2), base + 1]
             e += 1
 
-    # ---------------- pack nodes as [NodeID, X, Y, Z] ---------------- #
-    nod_ij = np.zeros((nodes_tot, 4))
-    for i in range(nodes_tot):
-        nod_ij[i] = [
-            i + 1,               # NodeID
-            nodes_rot_ij[0][i],  # X
-            nodes_rot_ij[1][i],  # Y
-            nodes_rot_ij[2][i],  # Z
-        ]
+        # ---------------- pack nodes as [NodeID, X, Y, Z] (NO pre-rotation) ---------------- #
+        nodes_tot = (N + 1) * (N + 1)
+
+        nod_ij = np.zeros((nodes_tot, 4), dtype=float)
+        for i in range(nodes_tot):
+            nod_ij[i] = [
+                i + 1,               # NodeID
+                nodes_mod_ij[0][i],  # X
+                nodes_mod_ij[1][i],  # Y
+                nodes_mod_ij[2][i],  # Z
+            ]
 
     return nod_ij, ele_ij
