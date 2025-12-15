@@ -497,6 +497,8 @@ def run():
     # --- Open Explorer only once per Run click --- #
     opened_dir = False
 
+    print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
+    
     # --- define the helper used below, AFTER inputs so it can use H/Ne/Re/N --- #
     def generate_and_export(name, nodes, elements, areas=None):
         # Coerce to arrays so nodes[:, 1] etc. works even if lists were returned.
