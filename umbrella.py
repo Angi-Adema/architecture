@@ -497,8 +497,6 @@ def run():
     # --- Open Explorer only once per Run click --- #
     opened_dir = False
 
-    print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
-
     # --- define the helper used below, AFTER inputs so it can use H/Ne/Re/N --- #
     def generate_and_export(name, nodes, elements, areas=None):
         nodes_arr = np.asarray(nodes, dtype=object)      # [Name/ID, X, Y, Z]
@@ -616,6 +614,12 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
+        print(
+            "[DEBUG] areas_full:",
+            None if areas_full is None else len(areas_full),
+            flush=True
+        )
+
         if not _has_plottable_nodes(nodes_full):
             messagebox.showerror(
                 "Geometry error",
@@ -632,6 +636,12 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
+        print(
+            "[DEBUG] areas_full:",
+            None if areas_full is None else len(areas_full),
+            flush=True
+        )
+
         if not _has_plottable_nodes(nodes_full):
             messagebox.showerror(
                 "Geometry error",
@@ -646,6 +656,12 @@ def run():
 
         nodes_full, elements_full, areas_full = _replicate_radially(
             nodes, elements, areas_data, Ne
+        )
+        
+        print(
+            "[DEBUG] areas_full:",
+            None if areas_full is None else len(areas_full),
+            flush=True
         )
 
         if not _has_plottable_nodes(nodes_full):
