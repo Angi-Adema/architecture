@@ -567,16 +567,13 @@ def run():
 
             has_areas = (areas is not None and len(areas) > 0)
 
-            if not has_areas:
-                # Only write Elements when you truly intend to create frames.
-                # Expected layout: [FrameName, I, J, Section, Material]
-                for i, row in enumerate(elements_arr):
-                    for j in range(5):
-                        val = row[j] if j < len(row) else None
-                        ws_elements.write(i, j, val)
-            else:
-                # Leave Elements blank intentionally for shell-only models
-                ws_elements.write(0, 0, "INTENTIONALLY BLANK (shell model uses Areas)")
+        if not has_areas:
+            # Write frames ONLY when intentionally creating frame elements
+            for i, row in enumerate(elements_arr):
+                for j in range(5):
+                    val = row[j] if j < len(row) else None
+                    ws_elements.write(i, j, val)
+        # else: do NOTHING — leave Elements sheet truly empty
             # ---------------- Areas ----------------
             if has_areas:
                 ws_areas = wb.add_worksheet('Areas')
