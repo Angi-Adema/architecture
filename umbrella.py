@@ -498,49 +498,15 @@ def run():
     opened_dir = False
 
     print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
-    
+
     # --- define the helper used below, AFTER inputs so it can use H/Ne/Re/N --- #
     def generate_and_export(name, nodes, elements, areas=None):
-        # Coerce to arrays so nodes[:, 1] etc. works even if lists were returned.
-        nodes_arr = np.asarray(nodes, dtype=object)      # [Name, X, Y, Z]
+        nodes_arr = np.asarray(nodes, dtype=object)      # [Name/ID, X, Y, Z]
         elements_arr = np.asarray(elements, dtype=object)
 
-        # Build filename & path in Output/
         xlsx_name = f"{name}{Ne}_H{H}_R{Re}_N{N}.xlsx"
         filepath = os.path.join(output_dir, xlsx_name)
 
-        # --- Close any previous preview to keep memory low --- #
-        global LAST_FIG
-        if LAST_FIG is not None and plt.fignum_exists(LAST_FIG.number):
-            plt.close(LAST_FIG)
-
-        # Preview nodes (robust to NaN/Inf/str)
-        try:
-            # Coerce XYZ to float and drop any bad rows
-            xyz = np.asarray(nodes_arr[:, 1:4], dtype=float)  # X,Y,Z
-            mask = np.isfinite(xyz).all(axis=1)
-            if not mask.any():
-                raise ValueError("No plottable nodes (all rows are NaN/Inf).")
-            xyz = xyz[mask]
-
-            fig = plt.figure()
-            try:
-                fig.canvas.manager.set_window_title(f"Preview: {name}")
-            except Exception:
-                pass
-            ax = fig.add_subplot(111, projection='3d')
-            lim = abs(H)
-            ax.set_xlim([-lim, lim])
-            ax.set_ylim([-lim, lim])
-            ax.set_zlim([-lim, lim])
-            ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2])
-            plt.tight_layout()
-            plt.show(block=False)
-            plt.pause(0.1)
-            LAST_FIG = fig
-        except Exception:
-            LAST_FIG = None  # skip preview if anything goes wrong
-        # Write Excel workbook (treat NaN/Inf as Excel errors)
         print(f"[Umbrella] Output directory: {output_dir}", flush=True)
         print(f"[Umbrella] Saving input workbook to: {filepath}", flush=True)
 
@@ -551,49 +517,42 @@ def run():
         except ValueError as e:
             messagebox.showerror("Areas validation", str(e))
             return
+        has_areas = (areas is not None and len(areas) > 0)
+
         with xlsxwriter.Workbook(filepath, {'nan_inf_to_errors': True}) as wb:
             # ---------------- Nodes ----------------
             ws_nodes = wb.add_worksheet('Nodes')
+            ws_nodes.write_row(0, 0, ["Name", "X", "Y", "Z"])  # OK (reader skips)
 
-            # Header row (IMPORTANT for sap_integration pandas reader)
-            ws_nodes.write_row(0, 0, ["Name", "X", "Y", "Z"])
-
-            # Data starts on row 1
             for i, row in enumerate(nodes_arr, start=1):
-                ws_nodes.write(i, 0, row[0])  # Name
+                ws_nodes.write(i, 0, row[0])  # Name / NodeID
                 ws_nodes.write(i, 1, row[1])  # X
                 ws_nodes.write(i, 2, row[2])  # Y
                 ws_nodes.write(i, 3, row[3])  # Z
-                
+
             # ---------------- Elements ----------------
-            # IMPORTANT FIX:
-            # If we're providing Areas (shells), we do NOT want to also create
-            # frames from the quad connectivity. That was causing the “lines /
-            # zigzags” artifacts.
+            # IMPORTANT: if shell model uses Areas, Elements must be truly empty
             ws_elements = wb.add_worksheet('Elements')
 
-            has_areas = (areas is not None and len(areas) > 0)
+            if not has_areas:
+                # If you ever want frames, write them here (FrameName, I, J, Section, Material)
+                for i, row in enumerate(elements_arr):
+                    for j in range(5):
+                        ws_elements.write(i, j, row[j] if j < len(row) else None)
+            # else: do nothing; leave sheet blank
 
-        if not has_areas:
-            # Write frames ONLY when intentionally creating frame elements
-            for i, row in enumerate(elements_arr):
-                for j in range(5):
-                    val = row[j] if j < len(row) else None
-                    ws_elements.write(i, j, val)
-        # else: do NOTHING — leave Elements sheet truly empty
             # ---------------- Areas ----------------
             if has_areas:
                 ws_areas = wb.add_worksheet('Areas')
-
-                # Header row (IMPORTANT)
                 ws_areas.write_row(0, 0, ["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
 
-                # Data starts on row 1
                 for i, row in enumerate(areas, start=1):
                     for j, val in enumerate(row):
                         ws_areas.write(i, j, val)
 
-        # Open the folder automatically on Windows (only once per Run)
+        print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
+
+        # Open folder (only once)
         nonlocal opened_dir
         if not opened_dir:
             try:
@@ -601,7 +560,6 @@ def run():
             except Exception:
                 pass
             opened_dir = True
-        # Build specs from GUI
         soil_spec = {
             "depth_min": depth_min_var.get(),
             "depth_max": depth_max_var.get(),
@@ -615,15 +573,14 @@ def run():
         }
         material_spec = {
             "name":   mat_name_var.get(),
-            "type":   mat_type_var.get(),      # "Concrete" or "Steel"
-            "region": mat_region_var.get(),    # "User", "United States", etc.
+            "type":   mat_type_var.get(),
+            "region": mat_region_var.get(),
             "E":      E_var.get(),
             "nu":     nu_var.get(),
             "alpha":  alpha_var.get(),
-            "gamma":  gamma_var_mat.get(),     # N/m^3
+            "gamma":  gamma_var_mat.get(),
         }
 
-        # ---- Run SAP2000 analysis on this file ----
         try:
             results = run_sap2000_analysis(
                 filepath,
@@ -638,11 +595,7 @@ def run():
                 f"Model:   {os.path.basename(results['model_path'])}\n"
                 f"Results: {os.path.basename(results['results_path'])}\n\n"
                 f"Nodes: {results['num_nodes']}   Frames: {results['num_frames']}"
-                + (
-                    f"   Areas: {results.get('num_areas', 0)}"
-                    if 'num_areas' in results
-                    else ""
-                )
+                + (f"   Areas: {results.get('num_areas', 0)}" if 'num_areas' in results else "")
                 + f"\nDisplacements rows: {results['disp_rows']}\n"
                 + f"Frame forces rows: {results['force_rows']}\n"
                 + f"Material: {material_spec['name']} ({material_spec['type']})"
@@ -651,9 +604,7 @@ def run():
             import traceback
             print("\n=== Umbrella caught exception ===\n", flush=True)
             traceback.print_exc()
-            messagebox.showwarning(
-                "SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}"
-            )
+            messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
 
     # -------- generate each selected geometry and analyze --------
     if var_hypar.get():
