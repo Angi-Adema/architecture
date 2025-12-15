@@ -236,37 +236,123 @@ def _read_nodes_sheet(input_xlsx):
 
 def _read_elements_sheet(xlsx_path):
     """
-    'Elements' without headers, first 5 columns:
-      0 Frame, 1 I, 2 J, 3 Section (opt), 4 Material (opt)
+    Reads 'Elements' sheet. Supports either:
+      - no header row
+      - or a header row like: Frame, I, J, Section, Material
+
+    If the sheet is empty (common for shell-only models), returns an empty DF with proper columns.
+    Also ignores "INTENTIONALLY BLANK ..." rows if present.
     """
     df = pd.read_excel(xlsx_path, sheet_name="Elements", header=None)
+
+    # Empty sheet => return empty DF with the expected columns
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Frame", "I", "J", "Section", "Material"])
+
+    # Pad to 5 cols
     for c in range(df.shape[1], 5):
         df[c] = None
-    return df.rename(columns={0: "Frame", 1: "I", 2: "J", 3: "Section", 4: "Material"})[
+
+    # Detect and drop header-like first row
+    first = df.iloc[0].astype(str).str.strip().str.lower().tolist()
+    header_hits = {"frame", "i", "j", "section", "material"}
+    if any(v in header_hits for v in first):
+        df = df.iloc[1:].reset_index(drop=True)
+
+    df = df.rename(columns={0: "Frame", 1: "I", 2: "J", 3: "Section", 4: "Material"})[
         ["Frame", "I", "J", "Section", "Material"]
     ]
+
+    # Drop the old placeholder note row if it exists
+    df = df[~df["Frame"].astype(str).str.contains("INTENTIONALLY BLANK", case=False, na=False)].copy()
+
+    # Drop fully blank rows (Frame missing)
+    df = df[df["Frame"].notna() & (df["Frame"].astype(str).str.strip() != "")].copy()
+
+    # Normalize I/J to canonical IDs ("1", "2", ...)
+    def _canon_point(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s == "" or s.lower() == "nan":
+            return None
+        try:
+            f = float(s)
+            if np.isnan(f):
+                return None
+            if f.is_integer():
+                return str(int(f))
+            return str(f)
+        except Exception:
+            return s
+
+    df["I"] = df["I"].apply(_canon_point)
+    df["J"] = df["J"].apply(_canon_point)
+
+    return df.reset_index(drop=True)
 
 
 def _read_areas_sheet(xlsx_path):
     """
-    Reads 'Areas' sheet (no headers). Supports triangles (3 points) or quads (4 points).
-    Column layout (no header):
-      0: AreaName
-      1: P1   2: P2   3: P3   4: P4(optional, can be blank/NaN)
-      5: Section(optional)   6: Material(optional)
+    Reads 'Areas' sheet. Supports either:
+      - no header row
+      - or a header row like: Area, P1, P2, P3, P4, Section, Material
 
-    Returns a normalized DataFrame with columns:
+    Returns DataFrame columns:
       Area, P1, P2, P3, P4, Section, Material
     """
     df = pd.read_excel(xlsx_path, sheet_name="Areas", header=None)
+
+    # Empty / missing sheet safety
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
+
+    # Pad to 7 cols
     for c in range(df.shape[1], 7):
         df[c] = None
+
+    # Detect and drop header-like first row
+    first = df.iloc[0].astype(str).str.strip().str.lower().tolist()
+    header_hits = {"area", "p1", "p2", "p3", "p4", "section", "material"}
+    if any(v in header_hits for v in first):
+        df = df.iloc[1:].reset_index(drop=True)
+
+    # Name columns
     df = df.rename(columns={
         0: "Area", 1: "P1", 2: "P2", 3: "P3", 4: "P4", 5: "Section", 6: "Material"
     })[["Area", "P1", "P2", "P3", "P4", "Section", "Material"]]
-    # normalize blanks
-    df["P4"] = df["P4"].where(pd.notna(df["P4"]) & (df["P4"].astype(str).str.len() > 0), None)
-    return df
+
+    # Drop fully blank rows
+    df = df[df["Area"].notna() & (df["Area"].astype(str).str.strip() != "")].copy()
+
+    # Normalize point IDs so 1, 1.0, "1.0" -> "1"
+    def _canon_point(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s == "" or s.lower() == "nan":
+            return None
+        try:
+            f = float(s)
+            if np.isnan(f):
+                return None
+            if f.is_integer():
+                return str(int(f))
+            return str(f)
+        except Exception:
+            return s
+
+    for col in ["P1", "P2", "P3", "P4"]:
+        df[col] = df[col].apply(_canon_point)
+
+    # Allow triangles: if P4 blank => None
+    df["P4"] = df["P4"].where(df["P4"].notna() & (df["P4"].astype(str).str.len() > 0), None)
+
+    # Fill optional fields
+    df["Section"] = df["Section"].where(df["Section"].notna(), None)
+    df["Material"] = df["Material"].where(df["Material"].notna(), None)
+
+    return df.reset_index(drop=True)
 
 
 def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
