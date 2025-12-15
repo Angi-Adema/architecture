@@ -544,9 +544,9 @@ def run():
             # ---------------- Areas ----------------
             if has_areas:
                 ws_areas = wb.add_worksheet('Areas')
-                ws_areas.write_row(0, 0, ["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
 
-                for i, row in enumerate(areas, start=1):
+                # NO HEADER ROW — SAP2000 reader expects raw data
+                for i, row in enumerate(areas):
                     for j, val in enumerate(row):
                         ws_areas.write(i, j, val)
 
