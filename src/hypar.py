@@ -7,12 +7,18 @@ def hypar(H, Re, Ne, N):
     Generate ONE hypar tympan only (no radial replication here).
 
     Returns:
-        nod_ij : ( (N+1)^2, 4 ) array
+        nod_ij : ((N+1)^2, 4) float array
             [NodeID, X, Y, Z] for a single tympan.
-        ele_ij : ( N^2, 5 ) array
+        ele_ij : (N^2, 5) int array
             [ElemID, P1, P2, P3, P4] quad connectivity (node IDs).
+
+    Notes:
+      - This returns a single wedge/tympan. Your umbrella.py is responsible
+        for rotating + welding across Ne.
+      - Node ordering is assumed to be a regular (N+1)x(N+1) grid in the
+        same order created below so quad connectivity is consistent.
     """
-    psi_local = np.pi / Ne
+    psi_local = np.pi / Ne  # half-wedge angle
 
     # ---------------- geometry helpers (single tympan) ---------------- #
     def get_z(xp, yp):
@@ -44,20 +50,16 @@ def hypar(H, Re, Ne, N):
         yr = x * np.sin(2 * theta) + y * np.cos(2 * theta)
         return xr, yr
 
-    def rotate(x, y, theta, n):
-        xr = x * np.cos(theta * n) - y * np.sin(theta * n)
-        yr = x * np.sin(theta * n) + y * np.cos(theta * n)
-        return xr, yr
+    # ---------------- node generation (same logic, fixed structure) ---------------- #
+    nodes_tot = (N + 1) ** 2
 
-    # ---------------- node generation (same as your original) ---------------- #
     xp_base_i = np.linspace(0, H, N + 1)
     xp_index_i = np.linspace(0, N, N + 1)
-    nodes_tot = int((N + 1) ** 2)
 
     xp_i = np.zeros(nodes_tot)
     index_i = np.zeros(nodes_tot)
-    n = 0
 
+    n = 0
     for col in range(N + 1):
         for i in range(col + 1):
             xp_base_i[i] = xp_base_i[int(xp_index_i[col])]
@@ -78,47 +80,44 @@ def hypar(H, Re, Ne, N):
     nodes_ij = np.array(
         [get_xy(xp_i[i], yp_i[i]) + (get_z(xp_i[i], yp_i[i]),)
          for i in range(nodes_tot)]
-    ).T
+    ).T  # shape (3, nodes_tot)
 
     nodes_mod_ij = np.copy(nodes_ij)
     for col in range(N + 1):
         for i in range(N + 1):
             if i < col:
                 idx = int(i + (N + 1) * col)
-                xyr = sym(nodes_ij[0][idx], nodes_ij[1][idx])
-                nodes_mod_ij[0][idx] = xyr[0]
-                nodes_mod_ij[1][idx] = xyr[1]
+                xr, yr = sym(nodes_ij[0][idx], nodes_ij[1][idx])
+                nodes_mod_ij[0][idx] = xr
+                nodes_mod_ij[1][idx] = yr
 
-    nodes_rot_ij = np.zeros((3, nodes_tot))
+    # ---------------- pack nodes as [NodeID, X, Y, Z] ---------------- #
+    nod_ij = np.zeros((nodes_tot, 4), dtype=float)
     for i in range(nodes_tot):
-        x, y = rotate(nodes_mod_ij[0][i], nodes_mod_ij[1][i], -psi_local, 1)
-        nodes_rot_ij[:, i] = [x, y, nodes_mod_ij[2][i]]
+        nod_ij[i] = [
+            i + 1,
+            nodes_mod_ij[0][i],
+            nodes_mod_ij[1][i],
+            nodes_mod_ij[2][i],
+        ]
 
-        # ---------------- elements (quad connectivity for ONE tympan) ---------------- #
-        ele_num = int(N**2)
-        ele_ij = np.zeros((ele_num, 5), dtype=int)
-        e = 0
-        for col in range(N):
-            for row in range(N):
-                # node id at (col, row) in an (N+1)x(N+1) grid:
-                # id = col*(N+1) + row + 1
-                base = int(col * (N + 1) + row + 1)
-            # [ElemID, P1, P2, P3, P4]
-            # Consistent winding for a quad:
+    # ---------------- elements (quad connectivity for ONE tympan) ---------------- #
+    ele_num = N * N
+    ele_ij = np.zeros((ele_num, 5), dtype=int)
+
+    e = 0
+    for col in range(N):
+        for row in range(N):
+            base = col * (N + 1) + row + 1
+            # Quad winding:
             # (col,row) -> (col+1,row) -> (col+1,row+1) -> (col,row+1)
-            ele_ij[e] = [e + 1, base, base + (N + 1), base + (N + 2), base + 1]
-            e += 1
-
-        # ---------------- pack nodes as [NodeID, X, Y, Z] (NO pre-rotation) ---------------- #
-        nodes_tot = (N + 1) * (N + 1)
-
-        nod_ij = np.zeros((nodes_tot, 4), dtype=float)
-        for i in range(nodes_tot):
-            nod_ij[i] = [
-                i + 1,               # NodeID
-                nodes_mod_ij[0][i],  # X
-                nodes_mod_ij[1][i],  # Y
-                nodes_mod_ij[2][i],  # Z
+            ele_ij[e] = [
+                e + 1,
+                base,
+                base + (N + 1),
+                base + (N + 2),
+                base + 1
             ]
+            e += 1
 
     return nod_ij, ele_ij
