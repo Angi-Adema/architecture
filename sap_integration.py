@@ -8,6 +8,7 @@
 import importlib
 import os
 import math
+from pyexpat import model
 import re
 import pandas as pd
 import comtypes.client as cc
@@ -1685,6 +1686,49 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
+        # ------------------------------------------------------------
+# Soil actions: stiffness-based support + constant overburden
+# ------------------------------------------------------------
+soil_meta = None
+if soil:
+    try:
+        E_mpa = float(soil.get("E_soil_mpa", 0.0))
+        vax = soil.get("axis", "Z")
+
+        # 1) Assign stiffness-based vertical support springs
+        springs_meta = _assign_soil_stiffness_as_base_springs(
+            model,
+            nodes,
+            E_mpa,
+            vertical_axis=vax
+        )
+
+        # 2) Assign constant overburden pressure on base areas
+        overburden_meta = _assign_constant_overburden_to_base_areas(
+            model,
+            nodes,
+            areas,
+            pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
+            load_pattern=SOIL_LOAD_PATTERN,
+            case_name=SOIL_CASE_NAME,
+            vertical_axis=vax
+        )
+
+        soil_meta = {
+            "springs": springs_meta,
+            "overburden": overburden_meta
+        }
+
+        _log(
+            "[Soil]",
+            "Springs:", springs_meta,
+            "Overburden:", overburden_meta
+        )
+
+    except Exception as e:
+        _log("[Soil] Skipped:", e)
+
+
         # Save model beside spreadsheet (e.g., umbrella.sdb)
         base, _ = os.path.splitext(input_xlsx)
         sdb_path = base + ".sdb"
@@ -1755,6 +1799,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             _log(traceback.format_exc())
             raise
 
+        soil_disp_df = pd.DataFrame()
+        if soil_meta and soil_meta.get("overburden", {}).get("assigned_areas", 0) > 0:
+            try:
+                soil_disp_df = _collect_joint_displacements(model, node_names, SOIL_CASE_NAME)
+            except Exception:
+                soil_disp_df = pd.DataFrame()
+
+
         results_xlsx = base + "_results.xlsx"
         _ensure_xlsxwriter()
 
@@ -1766,6 +1818,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
             if not disp_df.empty:
                 disp_df.to_excel(xlw, sheet_name="JointDisplacements", index=False)
+            if not soil_disp_df.empty:
+                soil_disp_df.to_excel(xlw, sheet_name="Soil_JointDisplacements", index=False)
             if not force_df.empty:
                 force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
 
