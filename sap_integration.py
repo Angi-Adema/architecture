@@ -587,7 +587,7 @@ def _build_areas_from_excel(model, areas_df,
             pass
 
 
-def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
+def _fix_base_nodes(model, nodes_df, tol=1e-3, fix=(1, 1, 1, 1, 1, 1)):
     """
     Fix nodes at the minimum Z (within tol).
     fix: tuple/list of 6 flags (UX, UY, UZ, RX, RY, RZ).
@@ -1149,8 +1149,9 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
     if E_pa <= 0:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
 
+    TOL_Z = 1e-3
     zmin = float(nodes_df["Z"].min())
-    base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= 1e-6, ["Name", "X", "Y"]].copy()
+    base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= TOL_Z, ["Name", "X", "Y"]].copy()
     if base.empty:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
 
