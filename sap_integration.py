@@ -1,14 +1,13 @@
 # SAP2000 v20 integration used by umbrella.py
-# - Reads umbrella.xlsx structure (Nodes, Elements)
-# - Builds model in SAP2000 (one tympan)
-# - Uses SAP2000 radial replicate to build full umbrella
+# - Reads umbrella.xlsx structure (Nodes, Elements, Areas)
+# - Builds model in SAP2000
 # - Runs analysis (Dead self-weight, optional soil sweep)
+# - Optional soil: stiffness-based base springs + constant overburden pressure (backend-fixed)
 # - Exports model + results to <input>_results.xlsx
 
 import importlib
 import os
 import math
-from pyexpat import model
 import re
 import pandas as pd
 import comtypes.client as cc
@@ -20,20 +19,20 @@ def _ensure_xlsxwriter():
         import xlsxwriter  # noqa: F401
     except ImportError:
         raise RuntimeError("Please `pip install xlsxwriter` to write results.")
-    
+
 
 def _ensure_openpyxl():
     try:
         import openpyxl  # noqa: F401
     except ImportError:
         raise RuntimeError("Please `pip install openpyxl` to read .xlsx files.")
-    
+
 
 # --- DEBUG SWITCH ---
 DEBUG = True
 
 # ---- Soil constants (backend-fixed) ----
-OVERBURDEN_PRESSURE_NPM2 = 18000.0  # N/m^2 (Pa) constant
+OVERBURDEN_PRESSURE_NPM2 = 18000.0  # N/m^2 (Pa) constant (backend)
 SOIL_LOAD_PATTERN = "SOIL_OB"       # load pattern name
 SOIL_CASE_NAME = "SOIL_CASE"
 
@@ -221,12 +220,10 @@ def _read_nodes_sheet(input_xlsx):
 
     # If first row looks like headers, drop it
     first_row = df.iloc[0].astype(str).str.strip().str.lower().tolist()
-    # common header patterns
     if ("x" in first_row and "y" in first_row and "z" in first_row) or ("name" in first_row):
         df = df.iloc[1:].reset_index(drop=True)
 
-    # Now proceed with your existing column detection logic
-    # (assuming Name, X, Y, Z are the first 4 columns)
+    # Assume Name, X, Y, Z are first 4 columns
     name_col, x_col, y_col, z_col = 0, 1, 2, 3
 
     out = pd.DataFrame({
@@ -236,7 +233,6 @@ def _read_nodes_sheet(input_xlsx):
         "Z": df.iloc[:, z_col].astype(float),
     })
 
-    # Optionally drop blank names
     out = out[out["Name"].notna() & (out["Name"] != "")]
     return out
 
@@ -252,7 +248,6 @@ def _read_elements_sheet(xlsx_path):
     """
     df = pd.read_excel(xlsx_path, sheet_name="Elements", header=None)
 
-    # Empty sheet => return empty DF with the expected columns
     if df is None or df.empty:
         return pd.DataFrame(columns=["Frame", "I", "J", "Section", "Material"])
 
@@ -270,13 +265,9 @@ def _read_elements_sheet(xlsx_path):
         ["Frame", "I", "J", "Section", "Material"]
     ]
 
-    # Drop the old placeholder note row if it exists
     df = df[~df["Frame"].astype(str).str.contains("INTENTIONALLY BLANK", case=False, na=False)].copy()
-
-    # Drop fully blank rows (Frame missing)
     df = df[df["Frame"].notna() & (df["Frame"].astype(str).str.strip() != "")].copy()
 
-    # Normalize I/J to canonical IDs ("1", "2", ...)
     def _canon_point(v):
         if v is None:
             return None
@@ -310,29 +301,23 @@ def _read_areas_sheet(xlsx_path):
     """
     df = pd.read_excel(xlsx_path, sheet_name="Areas", header=None)
 
-    # Empty / missing sheet safety
     if df is None or df.empty:
         return pd.DataFrame(columns=["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
 
-    # Pad to 7 cols
     for c in range(df.shape[1], 7):
         df[c] = None
 
-    # Detect and drop header-like first row
     first = df.iloc[0].astype(str).str.strip().str.lower().tolist()
     header_hits = {"area", "p1", "p2", "p3", "p4", "section", "material"}
     if any(v in header_hits for v in first):
         df = df.iloc[1:].reset_index(drop=True)
 
-    # Name columns
     df = df.rename(columns={
         0: "Area", 1: "P1", 2: "P2", 3: "P3", 4: "P4", 5: "Section", 6: "Material"
     })[["Area", "P1", "P2", "P3", "P4", "Section", "Material"]]
 
-    # Drop fully blank rows
     df = df[df["Area"].notna() & (df["Area"].astype(str).str.strip() != "")].copy()
 
-    # Normalize point IDs so 1, 1.0, "1.0" -> "1"
     def _canon_point(v):
         if v is None:
             return None
@@ -352,10 +337,7 @@ def _read_areas_sheet(xlsx_path):
     for col in ["P1", "P2", "P3", "P4"]:
         df[col] = df[col].apply(_canon_point)
 
-    # Allow triangles: if P4 blank => None
     df["P4"] = df["P4"].where(df["P4"].notna() & (df["P4"].astype(str).str.len() > 0), None)
-
-    # Fill optional fields
     df["Section"] = df["Section"].where(df["Section"].notna(), None)
     df["Material"] = df["Material"].where(df["Material"].notna(), None)
 
@@ -373,7 +355,7 @@ def _ensure_default_section(model, section="RECT_300x500", material="CONC40",
     try:
         model.PropFrame.SetRectangle(section, material, b, h)
     except Exception:
-        pass  # ok if already exists
+        pass
 
 
 def _ensure_material_defined(model, spec):
@@ -386,17 +368,15 @@ def _ensure_material_defined(model, spec):
     name = str(spec.get("name", "CONC40"))
     mtype = str(spec.get("type", "Concrete")).strip().lower()
     region = str(spec.get("region", "User"))
-    # SAP codes: 1=Steel, 2=Concrete (common in v20)
     mat_code = 2 if mtype == "concrete" else 1
 
-    # Define material (handle different API variants)
     try:
         model.PropMaterial.SetMaterial(name, mat_code)
     except Exception:
         try:
             model.PropMaterial.SetMaterial_1(name, region, "", "")
         except Exception:
-            pass  # ok if it already exists
+            pass
 
     E_pa = float(spec.get("E", 30e9))  # Pa = N/m^2 for N-m units
     nu = float(spec.get("nu", 0.2))
@@ -410,10 +390,9 @@ def _ensure_material_defined(model, spec):
         except Exception:
             pass
 
-    # Unit weight & mass density
     gamma_Npm3 = float(spec.get("gamma", 24000.0))  # N/m^3
-    gamma_kNpm3 = gamma_Npm3 / 1000.0               # kN/m^3
-    mass_kN_s2_m4 = gamma_kNpm3 / 9.80665           # consistent mass density
+    gamma_kNpm3 = gamma_Npm3 / 1000.0
+    mass_kN_s2_m4 = gamma_kNpm3 / 9.80665
     try:
         model.PropMaterial.SetWeightAndMass(name, gamma_kNpm3, mass_kN_s2_m4)
     except Exception:
@@ -434,23 +413,6 @@ def _mat_code_from_name(name: str, default: int = 2) -> int:
         return 2
     return default
 
-def _create_points_from_nodes(model, nodes_df):
-    """
-    Create SAP2000 joints from the Nodes dataframe only
-    (no frames). Columns: Name, X, Y, Z
-    """
-    for _, r in nodes_df.iterrows():
-        name = str(r["Name"])
-        x = float(r["X"])
-        y = float(r["Y"])
-        z = float(r["Z"])
-        try:
-            # AddCartesian(x, y, z, UserName)
-            model.PointObj.AddCartesian(x, y, z, name)
-        except Exception:
-            # If the point already exists with this name, just keep going
-            pass
-
 
 def _build_model_from_excel(model, nodes_df, elems_df,
                             default_section=("RECT_300x500", "CONC40", (0.30, 0.50))):
@@ -463,7 +425,6 @@ def _build_model_from_excel(model, nodes_df, elems_df,
     sec_name, mat_name, dims = default_section
     _ensure_default_section(model, sec_name, mat_name, dims)
 
-    # -- helper: robust existence check for a point across API variants
     def _point_exists(pt_name: str) -> bool:
         try:
             model.PointObj.GetCoordCartesian(pt_name, "Global")
@@ -475,16 +436,15 @@ def _build_model_from_excel(model, nodes_df, elems_df,
             except Exception:
                 return False
 
-    # ----- Points -----
+    # Points
     for _, r in nodes_df.iterrows():
         name, x, y, z = r["Name"], r["X"], r["Y"], r["Z"]
         try:
             model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
         except Exception:
-            # Likely duplicate; safe to continue
             pass
 
-    # ----- Frames -----
+    # Frames
     b, h = map(float, dims)
     for _, r in elems_df.iterrows():
         fname = str(r["Frame"]).strip()
@@ -496,47 +456,38 @@ def _build_model_from_excel(model, nodes_df, elems_df,
         sec = (raw_sec or "").strip() or sec_name
         mat = (raw_mat or "").strip() or mat_name
 
-        # Guards
         if not fname:
             raise RuntimeError(f"Elements sheet has a frame with empty name (I={i_pt}, J={j_pt}).")
         if i_pt == j_pt:
             raise RuntimeError(f"Frame '{fname}' has identical I and J points: {i_pt}.")
 
-        # Ensure material if explicitly provided in the sheet
         if pd.notna(r["Material"]):
             try:
-                model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))  # 1=Steel, 2=Concrete
+                model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))
             except Exception:
                 try:
                     model.PropMaterial.SetMaterial_1(mat, "User", "", "")
                 except Exception:
-                    pass  # fine if already defined
+                    pass
 
-        # Ensure the rectangular section exists (b, h in meters)
         try:
             model.PropFrame.SetRectangle(sec, mat, b, h)
         except Exception:
-            pass  # fine if already exists
+            pass
 
-        # Replace-if-exists behavior to avoid AddByPoint failing on name collision
         try:
             model.FrameObj.Delete(fname)
         except Exception:
             pass
 
-        # Points must exist
         if not _point_exists(i_pt) or not _point_exists(j_pt):
-            raise RuntimeError(
-                f"Point '{i_pt}' or '{j_pt}' not found before creating frame '{fname}'."
-            )
+            raise RuntimeError(f"Point '{i_pt}' or '{j_pt}' not found before creating frame '{fname}'.")
 
-        # Create frame: Name=fname, PropName=sec, CSys="Global"
         try:
             model.FrameObj.AddByPoint(i_pt, j_pt, fname, sec, "Global")
         except Exception as e:
             raise RuntimeError(f"Failed to create frame {fname} ({i_pt}->{j_pt}): {e}")
 
-        # Ensure property applied (covers odd builds)
         try:
             model.FrameObj.SetProperty(fname, sec)
         except Exception:
@@ -561,9 +512,8 @@ def _build_areas_from_excel(model, areas_df,
     sec_name, mat_name, thick_m = default_section
     area = model.AreaObj
 
-    # Ensure a default shell property & material exist
     try:
-        model.PropMaterial.SetMaterial(mat_name, 2)  # 2 = Concrete (SAP code)
+        model.PropMaterial.SetMaterial(mat_name, 2)
     except Exception:
         pass
     try:
@@ -581,18 +531,15 @@ def _build_areas_from_excel(model, areas_df,
         p3 = str(r["P3"])
         p4 = r["P4"]
 
-        # Section / Material (optional overrides)
         sec = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
         mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
 
-        # (Re)define material if custom
         if pd.notna(r["Material"]):
             try:
                 model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))
             except Exception:
                 pass
 
-        # (Re)define shell property for this section
         try:
             model.PropArea.SetShell(sec, mat, float(thick_m))
         except Exception:
@@ -601,18 +548,14 @@ def _build_areas_from_excel(model, areas_df,
             except Exception:
                 pass
 
-        # Build point list
         if p4 is None or (isinstance(p4, float) and pd.isna(p4)) or str(p4) == "":
-            # Triangle
             point_names = [p1, p2, p3]
         else:
-            # Quad
             p4 = str(p4)
             point_names = [p1, p2, p3, p4]
 
         n_pts = len(point_names)
 
-        # Try several AddByPoint signatures (version-safe)
         created_name = name
         created = False
         for meth in ("AddByPoint", "AddByPoint_1", "AddByPoint_2"):
@@ -622,13 +565,11 @@ def _build_areas_from_excel(model, areas_df,
                 continue
 
             try:
-                # Most common: (NumberPoints, PointNames, Name, PropName, CSys)
                 ret = m(n_pts, point_names, created_name, sec, "Global")
                 created = True
                 break
             except TypeError:
                 try:
-                    # Some builds: (NumberPoints, PointNames, Name)
                     ret = m(n_pts, point_names, created_name)
                     created = True
                     break
@@ -638,12 +579,8 @@ def _build_areas_from_excel(model, areas_df,
                 continue
 
         if not created:
-            raise RuntimeError(
-                f"Failed to create area {name} "
-                f"({','.join(point_names)}) via AddByPoint variants."
-            )
+            raise RuntimeError(f"Failed to create area {name} ({','.join(point_names)}) via AddByPoint variants.")
 
-        # Try to assign property explicitly (in case the signature didn’t)
         try:
             area.SetProperty(created_name, sec)
         except Exception:
@@ -654,15 +591,11 @@ def _fix_base_nodes(model, nodes_df, tol=1e-6, fix=(1, 1, 1, 1, 1, 1)):
     """
     Fix nodes at the minimum Z (within tol).
     fix: tuple/list of 6 flags (UX, UY, UZ, RX, RY, RZ).
-        e.g. fixed: (1,1,1,1,1,1), pinned: (1,1,1,0,0,0)
     """
     zmin = float(nodes_df["Z"].min())
     base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= tol, "Name"].astype(str).tolist()
-
-    # Ensure we pass a single SAFEARRAY/sequence, not six separate args
-    restr = list(fix)  # comtypes will marshal this to SAFEARRAY(VARIANT_BOOL/INT)
+    restr = list(fix)
     for n in base:
-        # v20 wants: SetRestraint(Name, Restraint[6])
         model.PointObj.SetRestraint(n, restr)
 
 
@@ -689,27 +622,16 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
     _select_case(model, case)
 
     for nname in node_names:
-        # v20 signature:
-        # (ret, NumberResults, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3)
         try:
             ret, nres, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3 = \
                 model.Results.JointDispl(str(nname), 0, case)
         except Exception:
-            # skip bad node gracefully
             continue
-
-        _log(
-            f"[JointDispl] node={nname!r} -> nres={nres} | "
-            f"types: Obj={type(Obj).__name__}, U1={type(U1).__name__}, "
-            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, "
-            f"StepNum={type(StepNum).__name__}"
-        )
 
         n = int(nres or 0)
         if n == 0:
             continue
 
-        # Coerce possible scalars into sequences of length n
         Obj = _as_seq(Obj, n)
         LoadCase = _as_seq(LoadCase, n)
         StepType = _as_seq(StepType, n)
@@ -738,26 +660,16 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
     _select_case(model, case)
 
     for fname in frame_names:
-        # v20 signature:
-        # (ret, NumberResults, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3)
         try:
             ret, nres, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3 = \
                 model.Results.FrameForce(str(fname), 1, case)  # 1 = ends only
         except Exception:
             continue
 
-        _log(
-            f"[FrameForce] frame={fname!r} -> nres={nres} | "
-            f"types: Obj={type(Obj).__name__}, P={type(P).__name__}, "
-            f"LoadCase={type(LoadCase).__name__}, StepType={type(StepType).__name__}, "
-            f"StepNum={type(StepNum).__name__}"
-        )
-
         n = int(nres or 0)
         if n == 0:
             continue
 
-        # Normalize to sequences
         Obj = _as_seq(Obj, n)
         LoadCase = _as_seq(LoadCase, n)
         StepType = _as_seq(StepType, n)
@@ -770,7 +682,6 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
         M3 = _as_seq(M3, n)
 
         for i in range(n):
-            # result order comes I/J alternating for ends-only
             end = "I" if (i % 2 == 0) else "J"
             rows.append({
                 "Frame": Obj[i],
@@ -787,11 +698,7 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
 # ---------------- Area & Pattern Automation ---------------- #
 
 def _get_all_area_names(model):
-    """
-    Returns list of all area (shell) object names.
-
-    Handles both (ret, names) and (ret, count, names) signatures.
-    """
+    """Returns list of all area (shell) object names."""
     try:
         out = model.AreaObj.GetNameList()
     except Exception:
@@ -821,100 +728,49 @@ def _get_joint_xyz(model, joint_name):
     return float(x), float(y), float(z)
 
 
-def _autodetect_orientation_joints(model, vertical_axis="Z"):
+def _iter_all_point_coords(model):
     """
-    Returns (apex_name, behind_name) using the "max along vertical axis"
-    rule + nearest in horizontal plane.
+    Yield (name, x, y, z) for all joints in the model.
+    Handles both variants of GetNameList and GetCoordCartesian.
     """
-    ax = vertical_axis.upper()
-    if ax not in ("X", "Y", "Z"):
-        ax = "Z"
+    try:
+        out = model.PointObj.GetNameList()
+    except Exception:
+        return
 
-    # Gather all joints with coordinates
-    joints = list(_iter_all_point_coords(model))
-    if not joints:
-        return None, None
-
-    # Choose index and horizontal components
-    if ax == "Z":
-        axis_index = 2
-        horiz_idx = (0, 1)  # X, Y
-    elif ax == "Y":
-        axis_index = 1
-        horiz_idx = (0, 2)  # X, Z
-    else:  # "X"
-        axis_index = 0
-        horiz_idx = (1, 2)  # Y, Z
-
-    # Apex = max along vertical axis
-    apex = max(joints, key=lambda t: (t[1], t[2], t[3])[axis_index])  # (name,x,y,z); using tuple view
-    apex_name, ax_x, ax_y, ax_z = apex
-    apex_vert = (ax_x, ax_y, ax_z)[axis_index]
-    ax_h1 = (ax_x, ax_y, ax_z)[horiz_idx[0]]
-    ax_h2 = (ax_x, ax_y, ax_z)[horiz_idx[1]]
-
-    # Among joints strictly below apex along vertical axis,
-    # pick the one closest in the horizontal plane.
-    candidates = []
-    for nm, x, y, z in joints:
-        if nm == apex_name:
-            continue
-        vert = (x, y, z)[axis_index]
-        if vert >= apex_vert - 1e-12:
-            continue  # must be "behind" (lower) than apex
-        h1 = (x, y, z)[horiz_idx[0]]
-        h2 = (x, y, z)[horiz_idx[1]]
-        dh = math.hypot(h1 - ax_h1, h2 - ax_h2)
-        candidates.append((dh, nm))
-
-    if not candidates:
-        # Fallback: second-highest along vertical axis
-        others = [t for t in joints if t[0] != apex_name]
-        if not others:
-            return apex_name, None
-        behind_name = max(others, key=lambda t: (t[1], t[2], t[3])[axis_index])[0]
-        return apex_name, behind_name
-
-    behind_name = min(candidates)[1]
-    return apex_name, behind_name
-
-
-def _rename_point(model, old_name, new_name):
-    """
-    Renames a point to new_name, handling the case where new_name already exists.
-    """
-    if not old_name or not new_name or old_name == new_name:
-        return new_name
+    if isinstance(out, (list, tuple)) and len(out) == 3:
+        _, _, names = out
+    else:
+        try:
+            _, names = out
+        except Exception:
+            return
 
     try:
-        # If target doesn't exist, simple rename
-        model.PointObj.ChangeName(str(old_name), str(new_name))
-        return new_name
+        names_seq = list(names)
     except Exception:
-        # If new_name exists, swap via a temporary name
-        tmp = f"{new_name}__tmp__"
+        names_seq = [names]
+
+    for nm in names_seq:
+        name_str = str(nm)
         try:
-            model.PointObj.ChangeName(str(new_name), tmp)
+            out_coord = model.PointObj.GetCoordCartesian(name_str, "Global")
         except Exception:
-            pass
-        try:
-            model.PointObj.ChangeName(str(old_name), str(new_name))
-            # try to clean up tmp -> old_name (optional)
-            try:
-                model.PointObj.ChangeName(tmp, str(old_name))
-            except Exception:
-                pass
-            return new_name
-        except Exception:
-            # If all else fails, keep old_name
-            return old_name
+            out_coord = model.PointObj.GetCoordCartesian(name_str)
+
+        if isinstance(out_coord, (list, tuple)) and len(out_coord) >= 4:
+            _, x, y, z = out_coord[:4]
+        else:
+            continue
+
+        yield name_str, float(x), float(y), float(z)
 
 
 def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True):
     """
     Emulates UI: Assign > Area > Local Axes... > Specify Advanced Local Axes
     Plane ≈ 3-1, Two Joints = (joint1, joint2).
-    Tries advanced API variants, falls back to a 2D rotation (in horizontal plane).
+    Tries advanced API variants, falls back to a 2D rotation (in XY).
     """
     area = model.AreaObj
     names = _get_all_area_names(model)
@@ -922,7 +778,6 @@ def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", rep
         return
 
     for an in names:
-        # 1) Try advanced variants first
         for meth in ("SetLocalAxesAdvanced", "SetLocalAxes_2", "SetLocalAxesByPoints"):
             try:
                 m = getattr(area, meth)
@@ -930,20 +785,19 @@ def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", rep
                 continue
 
             try:
-                plane_code = 3  # maps to "Plane 3-1" on many v20 builds
+                plane_code = 3
                 if meth == "SetLocalAxesAdvanced":
-                    axis_dir = 1  # define local-1 by the vector (j1->j2)
+                    axis_dir = 1
                     m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
                 elif meth == "SetLocalAxesByPoints":
                     m(an, plane_code, str(joint1), str(joint2), bool(replace))
                 else:
                     axis_dir = 1
                     m(an, plane_code, axis_dir, True, str(joint1), str(joint2), bool(replace))
-                break  # done for this area
+                break
             except Exception:
                 continue
         else:
-            # 2) Fallback: rotate axes to align with projection of j1->j2 in XY
             try:
                 x1, y1, _ = _get_joint_xyz(model, joint1)
                 x2, y2, _ = _get_joint_xyz(model, joint2)
@@ -956,104 +810,12 @@ def _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", rep
                 pass
 
 
-def _ensure_joint_pattern_exists(model, pattern_name="SOIL_DEPTH"):
-    """
-    Ensures a joint pattern with 'pattern_name' exists.
-    """
-    candidates = [
-        ("PatternDef", "SetJointPattern"),
-        ("EditGeneral", "SetJointPattern"),
-        ("DefineJointPattern", None),
-    ]
-    for obj_name, meth_name in candidates:
-        try:
-            target = getattr(model, obj_name) if obj_name else model
-            method = getattr(target, meth_name) if meth_name else getattr(model, "DefineJointPattern")
-            method(pattern_name)
-            return True
-        except Exception:
-            continue
-    return False
-
-
-def _set_joint_pattern_value_for_point(model, joint_name, pattern_name, value):
-    """
-    Set joint pattern value at a specific point (joint).
-    """
-    point = model.PointObj
-    method_names = ["SetPatternValue", "SetPattern", "SetPatternValue_1"]
-    for m in method_names:
-        try:
-            getattr(point, m)(str(joint_name), str(pattern_name), float(value))
-            return True
-        except Exception:
-            continue
-    return False
-
-
-def _iter_all_point_coords(model):
-    """
-    Yield (name, x, y, z) for all joints in the model.
-
-    Handles both SAP2000 variants of GetNameList:
-      - (ret, NumberNames, Names)
-      - (ret, Names)
-
-    And both variants of GetCoordCartesian:
-      - (ret, x, y, z)
-      - (ret, x, y, z, CSys)
-
-    Always casts joint names to strings so COM doesn’t see ints.
-    """
-    try:
-        out = model.PointObj.GetNameList()
-    except Exception:
-        return  # nothing to yield
-
-    # Normalize GetNameList outputs
-    # out might be (ret, n, names) OR (ret, names)
-    if isinstance(out, (list, tuple)) and len(out) == 3:
-        ret, n_names, names = out
-    else:
-        try:
-            ret, names = out
-        except Exception:
-            # Unexpected shape – bail out quietly
-            return
-
-    # Make sure we have a Python sequence of names
-    try:
-        names_seq = list(names)
-    except Exception:
-        names_seq = [names]
-
-    for nm in names_seq:
-        name_str = str(nm)  # ALWAYS pass a string into COM
-
-        # Try with CSys argument first, fall back to older signature
-        try:
-            out_coord = model.PointObj.GetCoordCartesian(name_str, "Global")
-        except Exception:
-            out_coord = model.PointObj.GetCoordCartesian(name_str)
-
-        # out_coord can be (ret,x,y,z) or (ret,x,y,z,csys)
-        if isinstance(out_coord, (list, tuple)) and len(out_coord) >= 4:
-            _, x, y, z = out_coord[:4]
-        else:
-            # If something really odd comes back, skip this point
-            continue
-
-        yield name_str, float(x), float(y), float(z)
-
-
-# --- new helpers for group, replication, and extracting full model --- #
+# --- new helpers for extracting full model --- #
 
 def _infer_ne_from_filename(xlsx_path):
     """
     Try to infer the number of tympans (Ne) from the input filename.
-    Expected pattern from umbrella.py:  Hypar4_H2.0_R1.0_N20.xlsx
-                                      ^^^^^
-    Returns int or None.
+    Expected pattern: Hypar4_H2.0_R1.0_N20.xlsx -> first token ends with digits (4)
     """
     base = os.path.splitext(os.path.basename(xlsx_path))[0]
     first = base.split("_")[0]
@@ -1066,118 +828,8 @@ def _infer_ne_from_filename(xlsx_path):
     return None
 
 
-def _make_tympan_group_from_all(model, group_name="Tympan"):
-    """
-    Create a group containing all current objects (points, frames, areas).
-    Mirrors the Ctrl+A + Assign > Assign to Group flow.
-    """
-    # Clear if it exists
-    try:
-        model.Groups.Delete(group_name)
-    except Exception:
-        pass
-
-    # Points
-    try:
-        ret, point_names = model.PointObj.GetNameList()
-        try:
-            point_names = list(point_names)
-        except Exception:
-            point_names = [point_names]
-        for nm in point_names:
-            try:
-                model.GroupDef.SetGroupAssign("Point", nm, group_name)
-            except Exception:
-                try:
-                    model.Groups.AddJoint(nm, group_name)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    # Frames
-    try:
-        ret, frame_names = model.FrameObj.GetNameList()
-        try:
-            frame_names = list(frame_names)
-        except Exception:
-            frame_names = [frame_names]
-        for nm in frame_names:
-            try:
-                model.GroupDef.SetGroupAssign("Frame", nm, group_name)
-            except Exception:
-                try:
-                    model.Groups.AddFrame(nm, group_name)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    # Areas
-    try:
-        names = _get_all_area_names(model)
-        for nm in names:
-            try:
-                model.GroupDef.SetGroupAssign("Area", nm, group_name)
-            except Exception:
-                try:
-                    model.Groups.AddArea(nm, group_name)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-
-def _replicate_group_radially(
-    model,
-    group_name="Tympan",
-    n_copies=3,
-    angle_deg=90.0,
-    axis="Z",
-    c_sys="Global",
-    delete_original=False,
-):
-    """
-    Emulate Edit > Replicate > Radial for a whole group.
-    This uses EditGeneral.EditReplicateRadial on the specified group if available.
-    """
-    if n_copies <= 0:
-        return
-
-    axis = axis.upper()
-
-    # Prefer the whole-group radial replicate if available (simplest & closest
-    # to the UI that already works for you).
-    try:
-        eg = getattr(model, "EditGeneral")
-        try:
-            eg.EditReplicateRadial(
-                1,                 # NumberItems (ignored when using GroupName)
-                0,                 # ObjectType (ignored)
-                "",                # ObjectName (ignored)
-                int(n_copies),
-                0.0, 0.0, 0.0,     # origin at (0,0,0)
-                float(angle_deg),  # RotationAngle per copy
-                str(c_sys),
-                True,              # IsRadial
-                bool(delete_original),
-                str(group_name),
-            )
-            return
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-    # Fallback: if we can't do radial replicate through the API,
-    # we leave a single tympan but keep a valid model.
-    _log("[WARN] Could not perform radial replication via API; leaving single tympan.")
-
-
 def _iter_all_frames(model):
-    """
-    Yield (name, I, J, Section) for all frame objects.
-    """
+    """Yield (name, I, J, Section) for all frame objects."""
     try:
         ret, names = model.FrameObj.GetNameList()
     except Exception:
@@ -1186,6 +838,7 @@ def _iter_all_frames(model):
         names = list(names)
     except Exception:
         names = [names]
+
     for nm in names:
         i_pt = j_pt = None
         sec = None
@@ -1204,9 +857,7 @@ def _iter_all_frames(model):
 
 
 def _iter_all_areas(model):
-    """
-    Yield (name, [points...], section) for all area objects.
-    """
+    """Yield (name, [points...], section) for all area objects."""
     for an in _get_all_area_names(model):
         pts = []
         sec = None
@@ -1225,17 +876,14 @@ def _iter_all_areas(model):
 
 def _extract_model_to_dfs(model):
     """
-    After SAP2000 has built (and possibly replicated) the model, pull out
-    full Nodes/Elements/Areas tables so the results workbook matches the
-    actual umbrella geometry.
+    After SAP2000 has built the model, pull out full Nodes/Elements/Areas
+    tables so the results workbook matches the actual geometry.
     """
-    # Nodes
     node_rows = []
     for nm, x, y, z in _iter_all_point_coords(model):
         node_rows.append({"Name": str(nm), "X": x, "Y": y, "Z": z})
     nodes_df = pd.DataFrame(node_rows)
 
-    # Frames
     frame_rows = []
     for nm, i_pt, j_pt, sec in _iter_all_frames(model):
         frame_rows.append({
@@ -1247,10 +895,9 @@ def _extract_model_to_dfs(model):
         })
     elems_df = pd.DataFrame(frame_rows)
 
-    # Areas
     area_rows = []
     for an, pts, sec in _iter_all_areas(model):
-        row = {
+        area_rows.append({
             "Area": str(an),
             "P1": pts[0] if len(pts) > 0 else None,
             "P2": pts[1] if len(pts) > 1 else None,
@@ -1258,14 +905,42 @@ def _extract_model_to_dfs(model):
             "P4": pts[3] if len(pts) > 3 else None,
             "Section": sec,
             "Material": None,
-        }
-        area_rows.append(row)
+        })
     areas_df = pd.DataFrame(area_rows)
 
     return nodes_df, elems_df, areas_df
 
 
 # ---------------- Soil / pattern automation ---------------- #
+
+def _ensure_joint_pattern_exists(model, pattern_name="SOIL_DEPTH"):
+    candidates = [
+        ("PatternDef", "SetJointPattern"),
+        ("EditGeneral", "SetJointPattern"),
+        ("DefineJointPattern", None),
+    ]
+    for obj_name, meth_name in candidates:
+        try:
+            target = getattr(model, obj_name) if obj_name else model
+            method = getattr(target, meth_name) if meth_name else getattr(model, "DefineJointPattern")
+            method(pattern_name)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _set_joint_pattern_value_for_point(model, joint_name, pattern_name, value):
+    point = model.PointObj
+    method_names = ["SetPatternValue", "SetPattern", "SetPatternValue_1"]
+    for m in method_names:
+        try:
+            getattr(point, m)(str(joint_name), str(pattern_name), float(value))
+            return True
+        except Exception:
+            continue
+    return False
+
 
 def _assign_area_surface_pressure_by_joint_pattern(
     model,
@@ -1322,20 +997,17 @@ def sweep_soil_pressure_by_depth(
     Assigns Area Loads -> Surface Pressure -> By Joint Pattern using a joint-pattern
     whose value is the local depth (or normalized depth) at each joint.
     """
-    # ---- Input guards ----
     if depth_step <= 0:
         raise ValueError("depth_step must be > 0")
     if depth_min > depth_max:
-        depth_min, depth_max = depth_max, depth_min  # swap defensively
+        depth_min, depth_max = depth_max, depth_min
 
-    # Ensure load pattern and joint pattern exist
     try:
-        model.LoadPatterns.Add(load_pattern_name, 1, 0.0)  # 1 = Dead (type), self-weight=0 for SOIL
+        model.LoadPatterns.Add(load_pattern_name, 1, 0.0)
     except Exception:
         pass
     _ensure_joint_pattern_exists(model, joint_pattern_name)
 
-    # Ensure we have areas and joints
     area_names = _get_all_area_names(model)
     if not area_names:
         raise RuntimeError("No area (shell) objects found. Soil pressure must be assigned to areas.")
@@ -1344,7 +1016,6 @@ def sweep_soil_pressure_by_depth(
     if not joints:
         raise RuntimeError("No joints found in model to set joint-pattern values.")
 
-    # Vertical axis + surface elevation
     ax = vertical_axis.upper()
     if ax not in ("X", "Y", "Z"):
         raise ValueError("vertical_axis must be one of 'X','Y','Z'")
@@ -1359,7 +1030,6 @@ def sweep_soil_pressure_by_depth(
         surface_elev = max(z for _, _, _, z in joints)
         axis_index = 2
 
-    # Define / configure a static case that uses the soil load
     try:
         model.LoadCases.StaticLinear.SetCase(results_case_name)
         model.LoadCases.StaticLinear.SetLoads(results_case_name, 1, [load_pattern_name], [1.0])
@@ -1369,32 +1039,28 @@ def sweep_soil_pressure_by_depth(
     results = []
     d = float(depth_min)
 
-    # Sweep from min to max (with a small epsilon for floating accumulation)
     while d <= depth_max + 1e-9:
-        d = round(d, 6)  # keep sheet/tab names clean and stable
+        d = round(d, 6)
 
-        # Compute multiplier ONCE per step
         if normalize_pattern:
-            multiplier = gamma_soil_N_per_m3 * d  # N/m^2
+            multiplier = gamma_soil_N_per_m3 * d
         else:
-            multiplier = gamma_soil_N_per_m3       # N/m^3
+            multiplier = gamma_soil_N_per_m3
 
-        # Set joint pattern values for this step depth d
         for joint_name, x, y, z in joints:
             elev = (x, y, z)[axis_index]
             raw_depth = max(0.0, surface_elev - elev)
             depth_for_step = min(raw_depth, d)
 
             if normalize_pattern:
-                pattern_value = 0.0 if d <= 1e-12 else (depth_for_step / d)  # 0..1
+                pattern_value = 0.0 if d <= 1e-12 else (depth_for_step / d)
             else:
-                pattern_value = depth_for_step  # meters
+                pattern_value = depth_for_step
 
             _set_joint_pattern_value_for_point(
                 model, joint_name, joint_pattern_name, pattern_value
             )
 
-        # Assign pressure to all areas via the joint pattern
         for an in area_names:
             _assign_area_surface_pressure_by_joint_pattern(
                 model,
@@ -1406,7 +1072,6 @@ def sweep_soil_pressure_by_depth(
                 replace=replace_area_load_each_step
             )
 
-        # Solve and collect
         _run_analysis(model)
 
         node_names = [n for (n, _, _, _) in joints]
@@ -1415,9 +1080,8 @@ def sweep_soil_pressure_by_depth(
         except Exception:
             disp_df = _collect_joint_displacements(model, node_names, case="Dead")
 
-        force_df = pd.DataFrame()  # add frame/area forces here later if desired
+        force_df = pd.DataFrame()
 
-        # Tag the outputs with the step depth and multiplier used
         disp_df.insert(0, "Depth_m", d)
         disp_df.insert(1, "Multiplier", multiplier)
         if not force_df.empty:
@@ -1427,7 +1091,6 @@ def sweep_soil_pressure_by_depth(
         results.append((d, disp_df, force_df))
         d = round(d + depth_step, 6)
 
-    # Optional: write a dedicated results book
     if results_book_path:
         _ensure_xlsxwriter()
         with pd.ExcelWriter(results_book_path, engine="xlsxwriter") as xlw:
@@ -1445,6 +1108,7 @@ def sweep_soil_pressure_by_depth(
         "forces_by_step": [frc for _, _, frc in results],
     }
 
+
 def _set_joint_vertical_spring(model, joint_name, k_vert_Npm, vertical_axis="Z", replace=True):
     """
     Assign uncoupled vertical spring stiffness at a joint.
@@ -1456,15 +1120,13 @@ def _set_joint_vertical_spring(model, joint_name, k_vert_Npm, vertical_axis="Z",
     K6 = [0.0] * 6
     K6[dof] = float(k_vert_Npm)
 
-    # Try common CSI signature variants
     try:
-        model.PointObj.SetSpring(str(joint_name), K6)  # simplest
+        model.PointObj.SetSpring(str(joint_name), K6)
         return True
     except Exception:
         pass
 
     try:
-        # Some builds include additional flags
         model.PointObj.SetSpring(str(joint_name), K6, 0, True, bool(replace))
         return True
     except Exception:
@@ -1475,32 +1137,31 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
     """
     Use E_soil (MPa) to create Winkler-like support springs at base joints.
 
-    Model assumption (simple, stable):
-      k_subgrade (N/m^3) = E_soil (Pa) / L
-      L = sqrt(footprint_area)  (a length scale of the foundation)
+    Simple model assumption:
+      E_soil(Pa) = E_soil_mpa * 1e6
+      footprint area A from convex hull of base nodes in XY
+      L = sqrt(A) (clamped) length scale
+      k_subgrade (N/m^3) = E_soil / L
+      Atrib = A / n_base_nodes
       K_joint (N/m) = k_subgrade * Atrib
-      Atrib = footprint_area / n_base_nodes
     """
     E_pa = float(E_soil_mpa) * 1e6
     if E_pa <= 0:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
 
-    # base nodes at min Z (same as your fixity logic)
     zmin = float(nodes_df["Z"].min())
     base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= 1e-6, ["Name", "X", "Y"]].copy()
     if base.empty:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
 
-    # footprint area using convex hull in XY (simple + robust)
-    pts = np.unique(base[["X","Y"]].astype(float).values, axis=0)
+    pts = np.unique(base[["X", "Y"]].astype(float).values, axis=0)
     if len(pts) < 3:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": 0.0, "L": None}
 
-    # convex hull area (monotonic chain)
-    pts = pts[np.lexsort((pts[:,1], pts[:,0]))]
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
 
     def cross(o, a, b):
-        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 
     lower = []
     for p in pts:
@@ -1514,36 +1175,46 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
         upper.append(tuple(p))
     hull = lower[:-1] + upper[:-1]
 
-    area = 0.0
+    area2 = 0.0
     for i in range(len(hull)):
         x1, y1 = hull[i]
-        x2, y2 = hull[(i+1) % len(hull)]
-        area += x1*y2 - x2*y1
-    A = abs(area) * 0.5
+        x2, y2 = hull[(i + 1) % len(hull)]
+        area2 += x1 * y2 - x2 * y1
+    A = abs(area2) * 0.5
 
     n_base = len(base)
     if A <= 0 or n_base <= 0:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": A, "L": None}
 
-    # choose L as length scale of footprint (meters)
-    L = max(0.5, (A ** 0.5))  # clamp to avoid insane stiffness on tiny areas
-
-    k_subgrade = E_pa / L      # N/m^3
-    Atrib = A / float(n_base)  # m^2 per base node
-    K_joint = k_subgrade * Atrib  # N/m
+    L = max(0.5, (A ** 0.5))
+    k_subgrade = E_pa / L
+    Atrib = A / float(n_base)
+    K_joint = k_subgrade * Atrib
 
     assigned = 0
     for nm in base["Name"].astype(str).tolist():
         if _set_joint_vertical_spring(model, nm, K_joint, vertical_axis=vertical_axis, replace=True):
             assigned += 1
 
-    return {"assigned": assigned, "E_pa": E_pa, "k_subgrade": k_subgrade, "footprint_area": A, "L": L, "K_joint": K_joint}
+    return {
+        "assigned": assigned,
+        "E_pa": E_pa,
+        "k_subgrade": k_subgrade,
+        "footprint_area": A,
+        "L": L,
+        "K_joint": K_joint
+    }
 
-def _assign_constant_overburden_to_base_areas(model, nodes_df, areas_df,
-                                             pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
-                                             load_pattern=SOIL_LOAD_PATTERN,
-                                             case_name=SOIL_CASE_NAME,
-                                             vertical_axis="Z"):
+
+def _assign_constant_overburden_to_base_areas(
+    model,
+    nodes_df,
+    areas_df,
+    pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
+    load_pattern=SOIL_LOAD_PATTERN,
+    case_name=SOIL_CASE_NAME,
+    vertical_axis="Z"
+):
     """
     Assign a constant surface pressure to areas that lie on the base (min Z).
     Pressure is in N/m^2 (Pa) for N-m units.
@@ -1555,20 +1226,17 @@ def _assign_constant_overburden_to_base_areas(model, nodes_df, areas_df,
     if areas_df is None or areas_df.empty:
         return {"assigned_areas": 0}
 
-    # define load pattern (Dead type, but self-weight 0)
     try:
         model.LoadPatterns.Add(load_pattern, 1, 0.0)
     except Exception:
         pass
 
-    # define linear static case that uses that pattern
     try:
         model.LoadCases.StaticLinear.SetCase(case_name)
         model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
     except Exception:
         pass
 
-    # identify base areas: all their points are at min Z
     zmin = float(nodes_df["Z"].min())
     node_z = dict(zip(nodes_df["Name"].astype(str), nodes_df["Z"].astype(float)))
 
@@ -1582,9 +1250,10 @@ def _assign_constant_overburden_to_base_areas(model, nodes_df, areas_df,
 
         if all(abs(node_z.get(p, 1e9) - zmin) <= 1e-6 for p in pts):
             try:
-                # "Projected" is typically what you want for global pressure
-                model.AreaObj.SetLoadSurfacePressure(an, load_pattern, "Projected",
-                                                     float(pressure_Npm2), "Global", True)
+                model.AreaObj.SetLoadSurfacePressure(
+                    an, load_pattern, "Projected",
+                    float(pressure_Npm2), "Global", True
+                )
                 assigned += 1
             except Exception:
                 pass
@@ -1592,13 +1261,20 @@ def _assign_constant_overburden_to_base_areas(model, nodes_df, areas_df,
     return {"assigned_areas": assigned, "pressure": pressure_Npm2, "pattern": load_pattern, "case": case_name}
 
 
-
 def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None, material=None):
     """
     Build & analyze a model from 'Nodes', optional 'Elements', and optional 'Areas' sheets,
     then write results to: <input_basename>_results.xlsx
 
-    Frames (line objects) are now optional – a pure shell model is allowed.
+    Frames (line objects) are optional – a pure shell model is allowed.
+
+    soil dict expected (for new backend soil workflow):
+      soil = {
+        "E_soil_mpa": <float>,    # USER enters this in GUI (MPa)
+        "axis": "Z"               # optional, default "Z"
+      }
+
+    Note: constant overburden is BACKEND fixed as OVERBURDEN_PRESSURE_NPM2.
     """
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
@@ -1607,9 +1283,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     # ---- read Excel ----
     nodes_in = _read_nodes_sheet(input_xlsx)
-    elems_in = _read_elements_sheet(input_xlsx)   # may be empty; that's fine
+    elems_in = _read_elements_sheet(input_xlsx)
 
-    # Debug: print bounding box
     _log(
         "Bounds:",
         f"X [{nodes_in['X'].min()}, {nodes_in['X'].max()}], "
@@ -1617,11 +1292,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         f"Z [{nodes_in['Z'].min()}, {nodes_in['Z'].max()}]"
     )
 
-    # ---- validate required sheets before doing anything else ----
     if nodes_in.empty:
         raise ValueError("Nodes sheet is empty.")
 
-    # Try to read Areas (quietly skip if the sheet isn't present)
     try:
         areas_in = _read_areas_sheet(input_xlsx)
         if areas_in is not None and areas_in.empty:
@@ -1629,16 +1302,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     except Exception:
         areas_in = None
 
-    # Ne is still useful for orientation logic, but not critical
-    Ne_inferred = _infer_ne_from_filename(input_xlsx) or 4
+    _ = _infer_ne_from_filename(input_xlsx) or 4  # kept for compatibility if you use later
 
     sap, model = _start_sap2000_v20(visible=visible)
     try:
-        # --- Define/ensure material before creating any sections ---
         selected_material = _ensure_material_defined(model, material) if material else None
         default_mat = selected_material or "CONC40"
 
-        # ⬇️ ALWAYS build points; frames are created only if there are rows in elems_in
         _build_model_from_excel(
             model,
             nodes_in,
@@ -1646,7 +1316,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             default_section=("RECT_300x500", default_mat, (0.30, 0.50))
         )
 
-        # Build areas (shells) with default shell property that uses the chosen material
         if areas_in is not None:
             _build_areas_from_excel(
                 model,
@@ -1654,151 +1323,106 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 default_section=("SHELL_200", default_mat, 0.20)
             )
 
-            # --- Orient area local axes based on node labels (1 and E+3) ---
+            # Orient area local axes based on node labels (1 and E+3), fallback to (1,23)
             try:
                 nodes_tot = len(nodes_in)
                 E = int(round(nodes_tot ** 0.5)) - 1
                 behind_name = str(E + 3)
-                _set_area_axes_by_two_joints(
-                    model,
-                    joint1="1",
-                    joint2=behind_name,
-                    plane="31",
-                    replace=True
-                )
+                _set_area_axes_by_two_joints(model, joint1="1", joint2=behind_name, plane="31", replace=True)
             except Exception:
-                # Fallback to historical 1 & 23 convention
-                _set_area_axes_by_two_joints(
-                    model,
-                    joint1="1",
-                    joint2="23",
-                    plane="31",
-                    replace=True
-                )
+                _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True)
 
-        # IMPORTANT: we **do not** replicate anything inside SAP2000 any more.
-        # The full umbrella geometry (all tympans) is already present in the Nodes/Areas.
-
-        # Extract back full model (for consistent results workbook)
+        # Extract the actual built model
         nodes, elems, areas = _extract_model_to_dfs(model)
 
-        # Fix supports using full umbrella nodes
+        # Supports + Dead load
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
         # ------------------------------------------------------------
-# Soil actions: stiffness-based support + constant overburden
-# ------------------------------------------------------------
-soil_meta = None
-if soil:
-    try:
-        E_mpa = float(soil.get("E_soil_mpa", 0.0))
-        vax = soil.get("axis", "Z")
+        # Soil actions: stiffness-based support + constant overburden
+        # ------------------------------------------------------------
+        soil_meta = None
+        if soil:
+            try:
+                E_mpa = float(soil.get("E_soil_mpa", 0.0))
+                vax = soil.get("axis", "Z")
 
-        # 1) Assign stiffness-based vertical support springs
-        springs_meta = _assign_soil_stiffness_as_base_springs(
-            model,
-            nodes,
-            E_mpa,
-            vertical_axis=vax
-        )
+                springs_meta = _assign_soil_stiffness_as_base_springs(
+                    model, nodes, E_mpa, vertical_axis=vax
+                )
 
-        # 2) Assign constant overburden pressure on base areas
-        overburden_meta = _assign_constant_overburden_to_base_areas(
-            model,
-            nodes,
-            areas,
-            pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
-            load_pattern=SOIL_LOAD_PATTERN,
-            case_name=SOIL_CASE_NAME,
-            vertical_axis=vax
-        )
+                overburden_meta = _assign_constant_overburden_to_base_areas(
+                    model, nodes, areas,
+                    pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
+                    load_pattern=SOIL_LOAD_PATTERN,
+                    case_name=SOIL_CASE_NAME,
+                    vertical_axis=vax
+                )
 
-        soil_meta = {
-            "springs": springs_meta,
-            "overburden": overburden_meta
-        }
+                soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
-        _log(
-            "[Soil]",
-            "Springs:", springs_meta,
-            "Overburden:", overburden_meta
-        )
+                _log("[Soil]", "Springs:", springs_meta, "Overburden:", overburden_meta)
+            except Exception as e:
+                _log("[Soil] Skipped:", e)
 
-    except Exception as e:
-        _log("[Soil] Skipped:", e)
-
-
-        # Save model beside spreadsheet (e.g., umbrella.sdb)
-        base, _ = os.path.splitext(input_xlsx)
+        # Save model beside spreadsheet
+        base, _ext = os.path.splitext(input_xlsx)
         sdb_path = base + ".sdb"
         try:
             model.File.Save(sdb_path)
         except Exception:
             pass
 
+        # Run analysis once (Dead + any soil case that exists)
         _run_analysis(model)
 
-        # Ensure only the desired case is selected for output
+        # Default: output "Dead"
         try:
             model.Results.Setup.DeselectAllCasesAndCombosForOutput()
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
         except Exception:
             pass
 
-        # --- Soil sweep (only if provided) ---
+        # --- Optional soil sweep (legacy/extra feature; independent of constant overburden) ---
         soil_results = None
         if soil:
             try:
                 replace_area_load_each_step = soil.get("replace_each_step", True)
-                soil_results = sweep_soil_pressure_by_depth(
-                    model,
-                    depth_min=soil.get("depth_min", 0.0),
-                    depth_max=soil.get("depth_max", 4.0),
-                    depth_step=soil.get("depth_step", 0.5),
-                    gamma_soil_N_per_m3=soil.get("gamma", 18000.0),
-                    load_pattern_name=soil.get("load_pattern", "SOIL"),
-                    joint_pattern_name=soil.get("joint_pattern", "SOIL_DEPTH"),
-                    vertical_axis=soil.get("axis", "Z"),
-                    normalize_pattern=soil.get("normalize", False),
-                    results_case_name=soil.get("case_name", "SOIL_CASE"),
-                    replace_area_load_each_step=replace_area_load_each_step,
-                    visible=visible,
-                    close_after=False,
-                    results_book_path=None
-                )
+                if any(k in soil for k in ("depth_min", "depth_max", "depth_step", "gamma", "load_pattern", "joint_pattern", "normalize", "case_name")):
+                    soil_results = sweep_soil_pressure_by_depth(
+                        model,
+                        depth_min=soil.get("depth_min", 0.0),
+                        depth_max=soil.get("depth_max", 4.0),
+                        depth_step=soil.get("depth_step", 0.5),
+                        gamma_soil_N_per_m3=soil.get("gamma", 18000.0),
+                        load_pattern_name=soil.get("load_pattern", "SOIL"),
+                        joint_pattern_name=soil.get("joint_pattern", "SOIL_DEPTH"),
+                        vertical_axis=soil.get("axis", "Z"),
+                        normalize_pattern=soil.get("normalize", False),
+                        results_case_name=soil.get("case_name", "SOIL_CASE"),
+                        replace_area_load_each_step=replace_area_load_each_step,
+                        visible=visible,
+                        close_after=False,
+                        results_book_path=None
+                    )
             except Exception as e:
                 _log("[SoilSweep] Skipped:", e)
 
-        # Debug
-        _log(f"[run] nodes_df={len(nodes)} rows, elems_df={len(elems)} rows")
-        if areas is not None:
-            _log(f"[run] areas_df={len(areas)} rows")
-
-        if "Name" in nodes.columns:
-            _log(f"[run] first 5 node names: {nodes['Name'].astype(str).tolist()[:5]}")
-
-        if "Frame" in elems.columns:
-            _log(f"[run] first 5 frame names: {elems['Frame'].astype(str).tolist()[:5]}")
-        else:
-            _log("[run] no 'Frame' column in elems (model may have only areas/shells).")
-
-        # Results
+        # Collect results
         node_names = nodes["Name"].astype(str).tolist()
         frame_names = elems["Frame"].astype(str).tolist() if ("Frame" in elems.columns and len(elems) > 0) else []
 
         import traceback
         try:
             disp_df = _collect_joint_displacements(model, node_names, "Dead")
-            if frame_names:
-                force_df = _collect_frame_end_forces(model, frame_names, "Dead")
-            else:
-                force_df = pd.DataFrame()
+            force_df = _collect_frame_end_forces(model, frame_names, "Dead") if frame_names else pd.DataFrame()
         except Exception:
             _log("[Error] While collecting results:")
             _log(traceback.format_exc())
             raise
 
+        # Soil-only response (constant overburden case)
         soil_disp_df = pd.DataFrame()
         if soil_meta and soil_meta.get("overburden", {}).get("assigned_areas", 0) > 0:
             try:
@@ -1806,7 +1430,7 @@ if soil:
             except Exception:
                 soil_disp_df = pd.DataFrame()
 
-
+        # Write results workbook
         results_xlsx = base + "_results.xlsx"
         _ensure_xlsxwriter()
 
@@ -1823,6 +1447,23 @@ if soil:
             if not force_df.empty:
                 force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
 
+            # Optional: dump soil_meta for debugging
+            if soil_meta:
+                try:
+                    pd.DataFrame([{
+                        "E_soil_mpa": float(soil.get("E_soil_mpa", 0.0)),
+                        "axis": soil.get("axis", "Z"),
+                        "springs_assigned": soil_meta.get("springs", {}).get("assigned", 0),
+                        "K_joint_Npm": soil_meta.get("springs", {}).get("K_joint", None),
+                        "overburden_pressure_Npm2": soil_meta.get("overburden", {}).get("pressure", None),
+                        "overburden_assigned_areas": soil_meta.get("overburden", {}).get("assigned_areas", 0),
+                        "overburden_pattern": soil_meta.get("overburden", {}).get("pattern", None),
+                        "overburden_case": soil_meta.get("overburden", {}).get("case", None),
+                    }]).to_excel(xlw, sheet_name="SoilMeta", index=False)
+                except Exception:
+                    pass
+
+            # Optional: soil sweep outputs
             if soil_results:
                 soil_cfg_df = pd.DataFrame([{
                     "depth_min": soil.get("depth_min", 0.0),
@@ -1864,6 +1505,7 @@ if soil:
             "disp_rows": 0 if disp_df.empty else len(disp_df),
             "force_rows": 0 if force_df.empty else len(force_df),
         }
+
     finally:
         try:
             if 'sap' in locals() and (close_after or not visible):
