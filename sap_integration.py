@@ -31,6 +31,11 @@ def _ensure_openpyxl():
 # --- DEBUG SWITCH ---
 DEBUG = True
 
+# ---- Soil constants (backend-fixed) ----
+OVERBURDEN_PRESSURE_NPM2 = 18000.0  # N/m^2 (Pa) constant
+SOIL_LOAD_PATTERN = "SOIL_OB"       # load pattern name
+SOIL_CASE_NAME = "SOIL_CASE"
+
 
 def _log(*a, sep=" ", end="\n"):
     """Lightweight debug logger - only prints when DEBUG is True."""
@@ -392,17 +397,15 @@ def _ensure_material_defined(model, spec):
         except Exception:
             pass  # ok if it already exists
 
-    # Convert inputs assuming model units = N-m-C (as set in _start_sap2000_v20)
-    E_pa = float(spec.get("E", 30e9))         # Pa (= N/m^2)
-    E_kPa = E_pa / 1000.0                     # kN/m^2 if we ever switch units
+    E_pa = float(spec.get("E", 30e9))  # Pa = N/m^2 for N-m units
     nu = float(spec.get("nu", 0.2))
-    alpha = float(spec.get("alpha", 1.0e-5))  # 1/C
+    alpha = float(spec.get("alpha", 1.0e-5))
 
     try:
-        model.PropMaterial.SetMPIsotropic(name, E_kPa, nu, alpha)
+        model.PropMaterial.SetMPIsotropic(name, E_pa, nu, alpha)
     except Exception:
         try:
-            model.PropMaterial.SetMPIsotropic_1(name, E_kPa, nu, alpha)
+            model.PropMaterial.SetMPIsotropic_1(name, E_pa, nu, alpha)
         except Exception:
             pass
 
@@ -1440,6 +1443,153 @@ def sweep_soil_pressure_by_depth(
         "displacements_by_step": [disp for _, disp, _ in results],
         "forces_by_step": [frc for _, _, frc in results],
     }
+
+def _set_joint_vertical_spring(model, joint_name, k_vert_Npm, vertical_axis="Z", replace=True):
+    """
+    Assign uncoupled vertical spring stiffness at a joint.
+    k_vert_Npm: N/m
+    """
+    ax = (vertical_axis or "Z").upper()
+    dof = 2 if ax == "Z" else (1 if ax == "Y" else 0)  # U1=X, U2=Y, U3=Z
+
+    K6 = [0.0] * 6
+    K6[dof] = float(k_vert_Npm)
+
+    # Try common CSI signature variants
+    try:
+        model.PointObj.SetSpring(str(joint_name), K6)  # simplest
+        return True
+    except Exception:
+        pass
+
+    try:
+        # Some builds include additional flags
+        model.PointObj.SetSpring(str(joint_name), K6, 0, True, bool(replace))
+        return True
+    except Exception:
+        return False
+
+
+def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical_axis="Z"):
+    """
+    Use E_soil (MPa) to create Winkler-like support springs at base joints.
+
+    Model assumption (simple, stable):
+      k_subgrade (N/m^3) = E_soil (Pa) / L
+      L = sqrt(footprint_area)  (a length scale of the foundation)
+      K_joint (N/m) = k_subgrade * Atrib
+      Atrib = footprint_area / n_base_nodes
+    """
+    E_pa = float(E_soil_mpa) * 1e6
+    if E_pa <= 0:
+        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
+
+    # base nodes at min Z (same as your fixity logic)
+    zmin = float(nodes_df["Z"].min())
+    base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= 1e-6, ["Name", "X", "Y"]].copy()
+    if base.empty:
+        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
+
+    # footprint area using convex hull in XY (simple + robust)
+    pts = np.unique(base[["X","Y"]].astype(float).values, axis=0)
+    if len(pts) < 3:
+        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": 0.0, "L": None}
+
+    # convex hull area (monotonic chain)
+    pts = pts[np.lexsort((pts[:,1], pts[:,0]))]
+
+    def cross(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(tuple(p))
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(tuple(p))
+    hull = lower[:-1] + upper[:-1]
+
+    area = 0.0
+    for i in range(len(hull)):
+        x1, y1 = hull[i]
+        x2, y2 = hull[(i+1) % len(hull)]
+        area += x1*y2 - x2*y1
+    A = abs(area) * 0.5
+
+    n_base = len(base)
+    if A <= 0 or n_base <= 0:
+        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": A, "L": None}
+
+    # choose L as length scale of footprint (meters)
+    L = max(0.5, (A ** 0.5))  # clamp to avoid insane stiffness on tiny areas
+
+    k_subgrade = E_pa / L      # N/m^3
+    Atrib = A / float(n_base)  # m^2 per base node
+    K_joint = k_subgrade * Atrib  # N/m
+
+    assigned = 0
+    for nm in base["Name"].astype(str).tolist():
+        if _set_joint_vertical_spring(model, nm, K_joint, vertical_axis=vertical_axis, replace=True):
+            assigned += 1
+
+    return {"assigned": assigned, "E_pa": E_pa, "k_subgrade": k_subgrade, "footprint_area": A, "L": L, "K_joint": K_joint}
+
+def _assign_constant_overburden_to_base_areas(model, nodes_df, areas_df,
+                                             pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
+                                             load_pattern=SOIL_LOAD_PATTERN,
+                                             case_name=SOIL_CASE_NAME,
+                                             vertical_axis="Z"):
+    """
+    Assign a constant surface pressure to areas that lie on the base (min Z).
+    Pressure is in N/m^2 (Pa) for N-m units.
+
+    NOTE on sign:
+      - If you want downward pressure, use +pressure
+      - If you want upward (soil reaction), use -pressure
+    """
+    if areas_df is None or areas_df.empty:
+        return {"assigned_areas": 0}
+
+    # define load pattern (Dead type, but self-weight 0)
+    try:
+        model.LoadPatterns.Add(load_pattern, 1, 0.0)
+    except Exception:
+        pass
+
+    # define linear static case that uses that pattern
+    try:
+        model.LoadCases.StaticLinear.SetCase(case_name)
+        model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
+    except Exception:
+        pass
+
+    # identify base areas: all their points are at min Z
+    zmin = float(nodes_df["Z"].min())
+    node_z = dict(zip(nodes_df["Name"].astype(str), nodes_df["Z"].astype(float)))
+
+    assigned = 0
+    for _, r in areas_df.iterrows():
+        an = str(r["Area"])
+        pts = [r.get("P1"), r.get("P2"), r.get("P3"), r.get("P4")]
+        pts = [str(p) for p in pts if p is not None and str(p).strip() != ""]
+        if len(pts) < 3:
+            continue
+
+        if all(abs(node_z.get(p, 1e9) - zmin) <= 1e-6 for p in pts):
+            try:
+                # "Projected" is typically what you want for global pressure
+                model.AreaObj.SetLoadSurfacePressure(an, load_pattern, "Projected",
+                                                     float(pressure_Npm2), "Global", True)
+                assigned += 1
+            except Exception:
+                pass
+
+    return {"assigned_areas": assigned, "pressure": pressure_Npm2, "pattern": load_pattern, "case": case_name}
+
 
 
 def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None, material=None):
