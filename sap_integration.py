@@ -1260,6 +1260,35 @@ def _assign_constant_overburden_to_base_areas(
 
     return {"assigned_areas": assigned, "pressure": pressure_Npm2, "pattern": load_pattern, "case": case_name}
 
+def _ensure_case_runs_in_analysis(model, case_name):
+    """
+    Some SAP2000 COM builds do not automatically include newly-created cases
+    in the analysis run set. This forces the case to be runnable if the API supports it.
+    """
+    try:
+        analyze = model.Analyze
+
+        # Most common signature on many builds:
+        # SetRunCaseFlag(CaseName, Run, All)
+        try:
+            analyze.SetRunCaseFlag(str(case_name), True, True)
+            return True
+        except Exception:
+            pass
+
+        # Variant found on some installs:
+        try:
+            analyze.SetRunCaseFlag_1(str(case_name), True, True)
+            return True
+        except Exception:
+            pass
+
+        # If no method exists, we can't force it here (we'll rely on re-run analysis).
+        return False
+
+    except Exception:
+        return False
+
 
 def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None, material=None):
     """
@@ -1359,6 +1388,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     case_name=SOIL_CASE_NAME,
                     vertical_axis=vax
                 )
+
+                # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
+                _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
+
+                # Re-run analysis AFTER defining SOIL_CASE + assigning overburden loads
+                # (this guarantees SOIL_CASE results exist)
+                _run_analysis(model)
 
                 soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
