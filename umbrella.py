@@ -181,12 +181,16 @@ Checkbutton(
 ).grid(sticky=W, row=9, column=0, columnspan=2)
 
 # --- Soil sweep inputs --- #
-depth_min_var = DoubleVar(value=0.0)
-depth_max_var = DoubleVar(value=4.0)
-depth_step_var = DoubleVar(value=0.5)
-gamma_var = DoubleVar(value=18000.0)   # N/m^3
-axis_var = StringVar(value="Z")
-normalize_var = BooleanVar(value=False)
+# depth_min_var = DoubleVar(value=0.0)
+# depth_max_var = DoubleVar(value=4.0)
+# depth_step_var = DoubleVar(value=0.5)
+# gamma_var = DoubleVar(value=18000.0)   # N/m^3
+# axis_var = StringVar(value="Z")
+# normalize_var = BooleanVar(value=False)
+
+E_soil_mpa_var = DoubleVar(value=50.0)  # MPa (user input)
+axis_var = StringVar(value="Z")         # keep if you want to support X/Y/Z vertical
+
 
 # --- Material inputs --- #
 mat_name_var = StringVar(value="CONC40")      # the material name you'll use in sections
@@ -245,37 +249,51 @@ if os.path.exists(img_path):
         pass
 
 # --- Soil sweep section (self-contained frame) --- #
+# soil_frame = Frame(root)
+# soil_frame.grid(row=10, column=0, columnspan=3, sticky="we", pady=(6, 8))
+
+# Label(
+#     soil_frame, text='Soil pressure sweep', font=font_head
+# ).grid(sticky=W, row=0, column=0, columnspan=2, pady=(0, 6))
+
+# Label(soil_frame, text='Soil Depth Min (m)', font=font_type).grid(
+#     sticky=W, row=1, column=0
+# )
+# Entry(soil_frame, textvariable=depth_min_var, width=10).grid(row=1, column=1)
+
+# Label(soil_frame, text='Soil Depth Max (m)', font=font_type).grid(
+#     sticky=W, row=2, column=0
+# )
+# Entry(soil_frame, textvariable=depth_max_var, width=10).grid(row=2, column=1)
+
+# Label(soil_frame, text='Depth Step (m)', font=font_type).grid(
+#     sticky=W, row=3, column=0
+# )
+# Entry(soil_frame, textvariable=depth_step_var, width=10).grid(row=3, column=1)
+
+# Label(soil_frame, text='γ Soil (N/m³)', font=font_type).grid(
+#     sticky=W, row=4, column=0
+# )
+# Entry(soil_frame, textvariable=gamma_var, width=10).grid(row=4, column=1)
+
+# Label(soil_frame, text='Vertical Axis', font=font_type).grid(
+#     sticky=W, row=5, column=0
+# )
+# OptionMenu(soil_frame, axis_var, "X", "Y", "Z").grid(row=5, column=1, sticky="we")
+
+# --- Soil stiffness section --- #
 soil_frame = Frame(root)
 soil_frame.grid(row=10, column=0, columnspan=3, sticky="we", pady=(6, 8))
 
-Label(
-    soil_frame, text='Soil pressure sweep', font=font_head
-).grid(sticky=W, row=0, column=0, columnspan=2, pady=(0, 6))
-
-Label(soil_frame, text='Soil Depth Min (m)', font=font_type).grid(
-    sticky=W, row=1, column=0
+Label(soil_frame, text='Soil (stiffness-based support)', font=font_head).grid(
+    sticky=W, row=0, column=0, columnspan=2, pady=(0, 6)
 )
-Entry(soil_frame, textvariable=depth_min_var, width=10).grid(row=1, column=1)
 
-Label(soil_frame, text='Soil Depth Max (m)', font=font_type).grid(
-    sticky=W, row=2, column=0
-)
-Entry(soil_frame, textvariable=depth_max_var, width=10).grid(row=2, column=1)
+Label(soil_frame, text='E-Soil (MPa)', font=font_type).grid(sticky=W, row=1, column=0)
+Entry(soil_frame, textvariable=E_soil_mpa_var, width=10).grid(row=1, column=1)
 
-Label(soil_frame, text='Depth Step (m)', font=font_type).grid(
-    sticky=W, row=3, column=0
-)
-Entry(soil_frame, textvariable=depth_step_var, width=10).grid(row=3, column=1)
-
-Label(soil_frame, text='γ Soil (N/m³)', font=font_type).grid(
-    sticky=W, row=4, column=0
-)
-Entry(soil_frame, textvariable=gamma_var, width=10).grid(row=4, column=1)
-
-Label(soil_frame, text='Vertical Axis', font=font_type).grid(
-    sticky=W, row=5, column=0
-)
-OptionMenu(soil_frame, axis_var, "X", "Y", "Z").grid(row=5, column=1, sticky="we")
+Label(soil_frame, text='Vertical Axis', font=font_type).grid(sticky=W, row=2, column=0)
+OptionMenu(soil_frame, axis_var, "X", "Y", "Z").grid(row=2, column=1, sticky="we")
 
 Checkbutton(
     soil_frame,
@@ -558,17 +576,22 @@ def run():
             except Exception:
                 pass
             opened_dir = True
+        # soil_spec = {
+        #     "depth_min": depth_min_var.get(),
+        #     "depth_max": depth_max_var.get(),
+        #     "depth_step": depth_step_var.get(),
+        #     "gamma": gamma_var.get(),
+        #     "axis": axis_var.get(),
+        #     "normalize": bool(normalize_var.get()),
+        #     "load_pattern": "SOIL",
+        #     "joint_pattern": "SOIL_DEPTH",
+        #     "case_name": "SOIL_CASE",
+        # }
         soil_spec = {
-            "depth_min": depth_min_var.get(),
-            "depth_max": depth_max_var.get(),
-            "depth_step": depth_step_var.get(),
-            "gamma": gamma_var.get(),
+            "E_soil_mpa": float(E_soil_mpa_var.get()),  # user input MPa
             "axis": axis_var.get(),
-            "normalize": bool(normalize_var.get()),
-            "load_pattern": "SOIL",
-            "joint_pattern": "SOIL_DEPTH",
-            "case_name": "SOIL_CASE",
         }
+
         material_spec = {
             "name":   mat_name_var.get(),
             "type":   mat_type_var.get(),
