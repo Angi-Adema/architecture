@@ -11,6 +11,7 @@ import math
 import re
 import pandas as pd
 import comtypes.client as cc
+import numpy as np
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
 def _ensure_xlsxwriter():
