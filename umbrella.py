@@ -1,4 +1,5 @@
-# umbrella.py (Optimized GUI Script)
+# umbrella.py (Optimized GUI Script) - corrected to match stiffness-based soil in sap_integration.py
+# Key fix: removed Normalize Pattern checkbox + any reference to normalize_var (it was undefined)
 
 import os
 import sys
@@ -180,17 +181,9 @@ Checkbutton(
     variable=var_autoclose
 ).grid(sticky=W, row=9, column=0, columnspan=2)
 
-# --- Soil sweep inputs --- #
-# depth_min_var = DoubleVar(value=0.0)
-# depth_max_var = DoubleVar(value=4.0)
-# depth_step_var = DoubleVar(value=0.5)
-# gamma_var = DoubleVar(value=18000.0)   # N/m^3
-# axis_var = StringVar(value="Z")
-# normalize_var = BooleanVar(value=False)
-
+# --- Soil stiffness inputs (NEW: matches sap_integration.py stiffness + constant overburden) --- #
 E_soil_mpa_var = DoubleVar(value=50.0)  # MPa (user input)
-axis_var = StringVar(value="Z")         # keep if you want to support X/Y/Z vertical
-
+axis_var = StringVar(value="Z")         # vertical axis (X/Y/Z)
 
 # --- Material inputs --- #
 mat_name_var = StringVar(value="CONC40")      # the material name you'll use in sections
@@ -248,40 +241,7 @@ if os.path.exists(img_path):
     except Exception:
         pass
 
-# --- Soil sweep section (self-contained frame) --- #
-# soil_frame = Frame(root)
-# soil_frame.grid(row=10, column=0, columnspan=3, sticky="we", pady=(6, 8))
-
-# Label(
-#     soil_frame, text='Soil pressure sweep', font=font_head
-# ).grid(sticky=W, row=0, column=0, columnspan=2, pady=(0, 6))
-
-# Label(soil_frame, text='Soil Depth Min (m)', font=font_type).grid(
-#     sticky=W, row=1, column=0
-# )
-# Entry(soil_frame, textvariable=depth_min_var, width=10).grid(row=1, column=1)
-
-# Label(soil_frame, text='Soil Depth Max (m)', font=font_type).grid(
-#     sticky=W, row=2, column=0
-# )
-# Entry(soil_frame, textvariable=depth_max_var, width=10).grid(row=2, column=1)
-
-# Label(soil_frame, text='Depth Step (m)', font=font_type).grid(
-#     sticky=W, row=3, column=0
-# )
-# Entry(soil_frame, textvariable=depth_step_var, width=10).grid(row=3, column=1)
-
-# Label(soil_frame, text='γ Soil (N/m³)', font=font_type).grid(
-#     sticky=W, row=4, column=0
-# )
-# Entry(soil_frame, textvariable=gamma_var, width=10).grid(row=4, column=1)
-
-# Label(soil_frame, text='Vertical Axis', font=font_type).grid(
-#     sticky=W, row=5, column=0
-# )
-# OptionMenu(soil_frame, axis_var, "X", "Y", "Z").grid(row=5, column=1, sticky="we")
-
-# --- Soil stiffness section --- #
+# --- Soil stiffness section (self-contained frame) --- #
 soil_frame = Frame(root)
 soil_frame.grid(row=10, column=0, columnspan=3, sticky="we", pady=(6, 8))
 
@@ -294,13 +254,6 @@ Entry(soil_frame, textvariable=E_soil_mpa_var, width=10).grid(row=1, column=1)
 
 Label(soil_frame, text='Vertical Axis', font=font_type).grid(sticky=W, row=2, column=0)
 OptionMenu(soil_frame, axis_var, "X", "Y", "Z").grid(row=2, column=1, sticky="we")
-
-Checkbutton(
-    soil_frame,
-    text='Normalize pattern (shape 0..1)',
-    font=font_type,
-    variable=normalize_var
-).grid(sticky=W, row=6, column=0, columnspan=2, pady=(4, 0))
 
 
 def _unpack_geometry(ret):
@@ -360,18 +313,12 @@ def _has_plottable_nodes(nodes) -> bool:
         return np.isfinite(xyz).all(axis=1).any()
     except Exception:
         return False
-    
+
+
 def _replicate_radially(nodes, elements, areas, Ne, tol=1e-7):
     """
     Replicate a single tympan Ne times around global Z-axis AND WELD coincident nodes
     so adjacent tympans share joints (no SAP2000 seam/gap).
-
-    nodes:    (n_nodes, 4) [ID, X, Y, Z]
-    elements: (n_elems, 5) [ID, P1, P2, P3, P4]   (optional, used only if you need it)
-    areas:    (n_areas, 7) [AreaName, P1, P2, P3, P4, Section, Material] or None
-
-    Returns:
-      nodes_full, elems_full, areas_full
     """
     import numpy as np
 
@@ -388,18 +335,13 @@ def _replicate_radially(nodes, elements, areas, Ne, tol=1e-7):
     n_elems_base = 0 if base_elems is None else base_elems.shape[0]
     angle_step = 2.0 * np.pi / float(Ne)
 
-    # --- helper: coordinate hash for welding ---
     def _key(x, y, z):
-        # quantize to a grid of size tol
         return (int(round(x / tol)), int(round(y / tol)), int(round(z / tol)))
 
-    # Global welded node table
-    key_to_gid = {}          # (qx,qy,qz) -> global node id (int)
-    global_nodes = []        # [gid, x, y, z]
+    key_to_gid = {}
+    global_nodes = []
     next_gid = 1
 
-    # For each copy, map local base node id -> welded global id
-    # maps[k][local_id] = global_id
     maps = []
 
     for k in range(Ne):
@@ -431,14 +373,12 @@ def _replicate_radially(nodes, elements, areas, Ne, tol=1e-7):
 
     nodes_full = np.array(global_nodes, dtype=float)
 
-    # ----- replicate/weld elements (optional) -----
     all_elems = []
     if base_elems is not None and base_elems.size > 0:
         next_eid = 1
         for k in range(Ne):
             m = maps[k]
             for j in range(n_elems_base):
-                # base_elems row: [eid, p1, p2, p3, p4]
                 p1 = int(round(base_elems[j, 1]))
                 p2 = int(round(base_elems[j, 2]))
                 p3 = int(round(base_elems[j, 3]))
@@ -447,7 +387,6 @@ def _replicate_radially(nodes, elements, areas, Ne, tol=1e-7):
                 next_eid += 1
     elems_full = np.array(all_elems, dtype=float) if all_elems else np.zeros((0, 5), dtype=float)
 
-    # ----- replicate/weld areas (recommended for your shell model) -----
     all_areas = [] if base_areas is not None else None
     if base_areas is not None:
         for k in range(Ne):
@@ -461,7 +400,6 @@ def _replicate_radially(nodes, elements, areas, Ne, tol=1e-7):
                 sec = row[5]
                 mat = row[6]
 
-                # NOTE: node IDs are now welded global IDs
                 new_area_name = f"{area_name_base}_{k+1}"
                 all_areas.append([
                     new_area_name,
@@ -474,7 +412,6 @@ def _replicate_radially(nodes, elements, areas, Ne, tol=1e-7):
                 ])
 
     areas_full = None if all_areas is None else np.array(all_areas, dtype=object)
-
     return nodes_full, elems_full, areas_full
 
 
@@ -498,24 +435,18 @@ def run():
         messagebox.showerror("Input Error", "Apothem length H must be > 0.")
         return
     if N < 1:
-        messagebox.showerror(
-            "Input Error", "Elements along apothem (N) must be ≥ 1."
-        )
+        messagebox.showerror("Input Error", "Elements along apothem (N) must be ≥ 1.")
         return
     if Re < 0:
         messagebox.showerror("Input Error", "Rise (Re) must be ≥ 0.")
         return
 
     if not (var_hypar.get() or var_pyramid.get() or var_dome.get()):
-        messagebox.showwarning(
-            "Selection", "Please select at least one geometry to generate."
-        )
+        messagebox.showwarning("Selection", "Please select at least one geometry to generate.")
         return
 
-    # --- Open Explorer only once per Run click --- #
     opened_dir = False
 
-    # --- define the helper used below, AFTER inputs so it can use H/Ne/Re/N --- #
     def generate_and_export(name, nodes, elements, areas=None):
         nodes_arr = np.asarray(nodes, dtype=object)      # [Name/ID, X, Y, Z]
         elements_arr = np.asarray(elements, dtype=object)
@@ -533,6 +464,7 @@ def run():
         except ValueError as e:
             messagebox.showerror("Areas validation", str(e))
             return
+
         has_areas = (areas is not None and len(areas) > 0)
 
         with xlsxwriter.Workbook(filepath, {'nan_inf_to_errors': True}) as wb:
@@ -541,11 +473,12 @@ def run():
             ws_nodes.write_row(0, 0, ["Name", "X", "Y", "Z"])  # OK (reader skips)
 
             for i, row in enumerate(nodes_arr, start=1):
-                node_id = _normalize_point_name(row[0])   # <-- ADD THIS
-                ws_nodes.write(i, 0, node_id)              # <-- USE IT HERE
-                ws_nodes.write(i, 1, row[1])               # X
-                ws_nodes.write(i, 2, row[2])               # Y
-                ws_nodes.write(i, 3, row[3])               # Z
+                node_id = _normalize_point_name(row[0])
+                ws_nodes.write(i, 0, node_id)
+                ws_nodes.write(i, 1, row[1])  # X
+                ws_nodes.write(i, 2, row[2])  # Y
+                ws_nodes.write(i, 3, row[3])  # Z
+
             # ---------------- Elements ----------------
             # IMPORTANT: if shell model uses Areas, Elements must be truly empty
             ws_elements = wb.add_worksheet('Elements')
@@ -555,20 +488,18 @@ def run():
                 for i, row in enumerate(elements_arr):
                     for j in range(5):
                         ws_elements.write(i, j, row[j] if j < len(row) else None)
-            # else: do nothing; leave sheet blank
+            # else: leave Elements blank
 
             # ---------------- Areas ----------------
             if has_areas:
                 ws_areas = wb.add_worksheet('Areas')
-
-                # NO HEADER ROW — SAP2000 reader expects raw data
+                # NO HEADER ROW
                 for i, row in enumerate(areas):
                     for j, val in enumerate(row):
                         ws_areas.write(i, j, val)
 
         print(f"[Umbrella] Exists? {os.path.exists(filepath)}", flush=True)
 
-        # Open folder (only once)
         nonlocal opened_dir
         if not opened_dir:
             try:
@@ -576,19 +507,10 @@ def run():
             except Exception:
                 pass
             opened_dir = True
-        # soil_spec = {
-        #     "depth_min": depth_min_var.get(),
-        #     "depth_max": depth_max_var.get(),
-        #     "depth_step": depth_step_var.get(),
-        #     "gamma": gamma_var.get(),
-        #     "axis": axis_var.get(),
-        #     "normalize": bool(normalize_var.get()),
-        #     "load_pattern": "SOIL",
-        #     "joint_pattern": "SOIL_DEPTH",
-        #     "case_name": "SOIL_CASE",
-        # }
+
+        # Soil spec matches sap_integration.py (stiffness-based + constant overburden handled backend)
         soil_spec = {
-            "E_soil_mpa": float(E_soil_mpa_var.get()),  # user input MPa
+            "E_soil_mpa": float(E_soil_mpa_var.get()),
             "axis": axis_var.get(),
         }
 
@@ -632,22 +554,14 @@ def run():
         ret = hypar(H, Re, Ne, N)
         nodes, elements, areas_data = _unpack_geometry(ret)
 
-        # 🔁 build full umbrella from single tympan
         nodes_full, elements_full, areas_full = _replicate_radially(
             nodes, elements, areas_data, Ne
         )
 
-        print(
-            "[DEBUG] areas_full:",
-            None if areas_full is None else len(areas_full),
-            flush=True
-        )
+        print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
 
         if not _has_plottable_nodes(nodes_full):
-            messagebox.showerror(
-                "Geometry error",
-                "Hypar produced no valid XYZ coordinates. Check inputs."
-            )
+            messagebox.showerror("Geometry error", "Hypar produced no valid XYZ coordinates. Check inputs.")
         else:
             generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
 
@@ -659,17 +573,10 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
-        print(
-            "[DEBUG] areas_full:",
-            None if areas_full is None else len(areas_full),
-            flush=True
-        )
+        print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
 
         if not _has_plottable_nodes(nodes_full):
-            messagebox.showerror(
-                "Geometry error",
-                "Pyramid produced no valid XYZ coordinates. Check inputs."
-            )
+            messagebox.showerror("Geometry error", "Pyramid produced no valid XYZ coordinates. Check inputs.")
         else:
             generate_and_export("Pyramid", nodes_full, elements_full, areas=areas_full)
 
@@ -680,18 +587,11 @@ def run():
         nodes_full, elements_full, areas_full = _replicate_radially(
             nodes, elements, areas_data, Ne
         )
-        
-        print(
-            "[DEBUG] areas_full:",
-            None if areas_full is None else len(areas_full),
-            flush=True
-        )
+
+        print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
 
         if not _has_plottable_nodes(nodes_full):
-            messagebox.showerror(
-                "Geometry error",
-                "Dome produced no valid XYZ coordinates. Check inputs."
-            )
+            messagebox.showerror("Geometry error", "Dome produced no valid XYZ coordinates. Check inputs.")
         else:
             generate_and_export("Dome", nodes_full, elements_full, areas=areas_full)
 
@@ -699,39 +599,32 @@ def run():
 def quit_app():
     """Cleanly close SAP2000 if it's running, then exit the GUI."""
     try:
-        # Optional: ask the user first
         if not messagebox.askokcancel("Quit", "Close SAP2000 and exit Umbrella?"):
             return
     except Exception:
-        # messagebox may not be initialized in some edge cases—proceed anyway
         pass
 
     closed = False
 
-    # Close any Matplotlib preview windows
     try:
-        import matplotlib.pyplot as plt
         plt.close('all')
     except Exception:
         pass
 
-    # Clear the last-figure handle used by generate_and_export
     try:
         global LAST_FIG
         LAST_FIG = None
     except Exception:
         pass
 
-    # Try the API paths that DO NOT launch a new instance
     try:
         import time
         import comtypes.client as cc
 
-        # 1) Attach via ROT (running object table)
         try:
             sap = cc.GetActiveObject("CSI.SAP2000.API.SapObject")
             try:
-                sap.ApplicationExit(True)  # True = no save prompt
+                sap.ApplicationExit(True)
                 time.sleep(1.0)
                 closed = True
             except Exception:
@@ -739,7 +632,6 @@ def quit_app():
         except Exception:
             pass
 
-        # 2) Attach via Helper.GetObject
         if not closed:
             try:
                 helper = cc.CreateObject("SAP2000v1.Helper")
@@ -750,25 +642,16 @@ def quit_app():
             except Exception:
                 pass
 
-        # 3) Last resort: force close if API attach failed
         if not closed:
             try:
-                # gentle try first (no /F)
-                subprocess.run(
-                    ["taskkill", "/IM", "SAP2000.exe", "/T"], capture_output=True
-                )
-                # ensure it’s gone
-                subprocess.run(
-                    ["taskkill", "/IM", "SAP2000.exe", "/T", "/F"], capture_output=True
-                )
+                subprocess.run(["taskkill", "/IM", "SAP2000.exe", "/T"], capture_output=True)
+                subprocess.run(["taskkill", "/IM", "SAP2000.exe", "/T", "/F"], capture_output=True)
             except Exception:
                 pass
 
     except Exception:
-        # If comtypes or subprocess import fails, still proceed to close GUI
         pass
 
-    # Finally, close the GUI
     try:
         master_window.destroy()
     except Exception:
@@ -777,16 +660,15 @@ def quit_app():
 
 
 # Run button
-Button(
-    root, text='Run', width=18, height=2, command=run
-).grid(row=6, column=2, rowspan=3, padx=(12, 0))
+Button(root, text='Run', width=18, height=2, command=run).grid(
+    row=6, column=2, rowspan=3, padx=(12, 0)
+)
 
 # Quit button
-Button(
-    root, text='Quit', width=18, height=2, command=quit_app
-).grid(row=9, column=2, pady=(8, 0), padx=(12, 0))
+Button(root, text='Quit', width=18, height=2, command=quit_app).grid(
+    row=9, column=2, pady=(8, 0), padx=(12, 0)
+)
 
-# Quit Matplotlib preview window if "X" clicked
 master_window.protocol("WM_DELETE_WINDOW", quit_app)
 
 # ---------------- VPN / License Pre-Check ---------------- #
