@@ -695,6 +695,168 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
             })
     return pd.DataFrame(rows)
 
+def _collect_shell_forces_moments(model, area_names, case="Dead"):
+    """
+    Collect shell forces/moments for SAP2000 area objects.
+    Expected outputs include:
+      F11,F22,F12 (membrane), M11,M22,M12 (bending), V13,V23 (shear)
+    Returns a DataFrame with one row per result station.
+    """
+    rows = []
+    _select_case(model, case)
+
+    # Try multiple API variants (different SAP builds expose different names)
+    candidates = [
+        ("AreaForceShell", lambda a: model.Results.AreaForceShell(str(a), 0, case)),
+        ("AreaForceShell_1", lambda a: model.Results.AreaForceShell_1(str(a), 0, case)),
+        ("ShellForce", lambda a: model.Results.ShellForce(str(a), 0, case)),
+    ]
+
+    def _call(area):
+        for name, fn in candidates:
+            try:
+                return fn(area)
+            except Exception:
+                continue
+        return None
+
+    for an in area_names:
+        out = _call(an)
+        if not out:
+            continue
+
+        try:
+            # Typical SAP return tuple shape (varies by build):
+            # ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
+            ret = out[0]
+            nres = int(out[1] or 0)
+            if nres <= 0:
+                continue
+
+            Obj      = _as_seq(out[2], nres)
+            Elm      = _as_seq(out[3], nres)  # sometimes station/element id
+            LoadCase = _as_seq(out[4], nres)
+            StepType = _as_seq(out[5], nres)
+            StepNum  = _as_seq(out[6], nres)
+
+            F11 = _as_seq(out[7],  nres)
+            F22 = _as_seq(out[8],  nres)
+            F12 = _as_seq(out[9],  nres)
+            M11 = _as_seq(out[10], nres)
+            M22 = _as_seq(out[11], nres)
+            M12 = _as_seq(out[12], nres)
+            V13 = _as_seq(out[13], nres)
+            V23 = _as_seq(out[14], nres)
+
+            for i in range(nres):
+                f11 = float(F11[i]); f22 = float(F22[i]); f12 = float(F12[i])
+
+                # Principal membrane forces per unit width:
+                avg = 0.5 * (f11 + f22)
+                rad = ((0.5 * (f11 - f22)) ** 2 + (f12 ** 2)) ** 0.5
+                fmax = avg + rad
+                fmin = avg - rad
+
+                rows.append({
+                    "Area": Obj[i],
+                    "Elm": Elm[i],
+                    "Case": LoadCase[i],
+                    "StepType": StepType[i],
+                    "StepNum": StepNum[i],
+                    "F11": f11, "F22": f22, "F12": f12,
+                    "Fmax": fmax, "Fmin": fmin,
+                    "M11": float(M11[i]), "M22": float(M22[i]), "M12": float(M12[i]),
+                    "V13": float(V13[i]), "V23": float(V23[i]),
+                })
+        except Exception:
+            continue
+
+    return pd.DataFrame(rows)
+
+def _extrema_summary(shell_df, label):
+    if shell_df is None or shell_df.empty:
+        return []
+    
+    def _row(col, mode="max"):
+        idx = shell_df[col].astype(float).idxmax() if mode=="max" else shell_df[col].astype(float).idxmin()
+        r = shell_df.loc[idx].to_dict()
+        r["Metric"] = f"{label}:{col}:{mode}"
+        r["Value"] = r[col]
+        return r
+    return [
+        _row("M11","max"),
+        _row("V13","max"),
+        _row("Fmax","max"),
+        _row("Fmin","min"),
+    ]
+
+summary_rows = []
+summary_rows += _extrema_summary(shell_dead_df, "Dead")
+if soil:
+    summary_rows += _extrema_summary(shell_soil_df, "Soil")
+
+if summary_rows:
+    pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="ShellExtrema", index=False)
+
+def _pick_key_nodes_for_settlement(nodes_df, axis="Z"):
+    """
+    Picks:
+      - Vertex: max along vertical axis
+      - Rim: nodes at min along vertical axis (corners + edges live here)
+      - Corners: rim nodes farthest from centroid (top Ne points)
+      - Edge midpoints: rim nodes nearest to directions between corner rays
+    Returns dict of node name lists.
+    """
+    ax = (axis or "Z").upper()
+    coord = {"X":"X","Y":"Y","Z":"Z"}[ax]
+
+    # Vertex = max elevation along chosen vertical axis
+    zmax = float(nodes_df[coord].max())
+    vtx = nodes_df.loc[(nodes_df[coord] - zmax).abs() <= 1e-6, "Name"].astype(str).tolist()
+
+    # Rim = min elevation
+    zmin = float(nodes_df[coord].min())
+    rim = nodes_df.loc[(nodes_df[coord] - zmin).abs() <= 1e-6, ["Name","X","Y"]].copy()
+    if rim.empty:
+        return {"vertex": vtx, "corners": [], "edges": []}
+
+    cx = float(rim["X"].mean())
+    cy = float(rim["Y"].mean())
+    rim["r2"] = (rim["X"]-cx)**2 + (rim["Y"]-cy)**2
+
+    # Corners = farthest 4 (works for your Ne=4 case; if Ne changes, use Ne)
+    corners = rim.sort_values("r2", ascending=False).head(4)["Name"].astype(str).tolist()
+
+    # Edge “midpoints” = rim nodes closest to angle halfway between corner angles
+    # Simple: pick 4 rim nodes closest to each quadrant direction.
+    import numpy as np
+    rim["ang"] = np.arctan2((rim["Y"]-cy).to_numpy(), (rim["X"]-cx).to_numpy())
+    rim["ang"] = (rim["ang"] + 2*np.pi) % (2*np.pi)
+
+    target_angles = [np.pi/4, 3*np.pi/4, 5*np.pi/4, 7*np.pi/4]
+    edges = []
+    for ta in target_angles:
+        rim["dang"] = np.minimum((rim["ang"]-ta) % (2*np.pi), (ta-rim["ang"]) % (2*np.pi))
+        pick = rim.sort_values("dang", ascending=True).iloc[0]["Name"]
+        edges.append(str(pick))
+
+    # de-dupe edges if they collide
+    edges = list(dict.fromkeys(edges))
+
+    return {"vertex": vtx, "corners": corners, "edges": edges}
+
+
+def _settlement_mm_from_displacements(disp_df, node_list, vertical_axis="Z"):
+    if disp_df is None or disp_df.empty:
+        return pd.DataFrame(columns=["Node","UZ_mm"])
+    ax = (vertical_axis or "Z").upper()
+    col = {"X":"UX","Y":"UY","Z":"UZ"}[ax]
+
+    sub = disp_df.loc[disp_df["Node"].astype(str).isin([str(n) for n in node_list]), ["Node", col]].copy()
+    sub = sub.rename(columns={col: "U_vert"})
+    sub["UZ_mm"] = sub["U_vert"].astype(float) * 1000.0
+    return sub[["Node","UZ_mm"]]
+
 
 # ---------------- Area & Pattern Automation ---------------- #
 
@@ -1602,6 +1764,32 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             except Exception:
                 soil_disp_df = pd.DataFrame()
 
+        # --- Shell results (areas) ---
+        area_names = _get_all_area_names(model)
+
+        shell_dead_df = pd.DataFrame()
+        shell_soil_df = pd.DataFrame()
+
+        if area_names:
+            shell_dead_df = _collect_shell_forces_moments(model, area_names, case="Dead")
+            if soil:
+                shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
+
+        # --- Settlement at key nodes (mm) ---
+        keys = _pick_key_nodes_for_settlement(nodes, axis=soil.get("axis","Z") if soil else "Z")
+        settle_dead = pd.concat([
+            _settlement_mm_from_displacements(disp_df, keys["vertex"], vertical_axis=soil.get("axis","Z") if soil else "Z").assign(Group="Vertex"),
+            _settlement_mm_from_displacements(disp_df, keys["edges"],  vertical_axis=soil.get("axis","Z") if soil else "Z").assign(Group="Edges"),
+            _settlement_mm_from_displacements(disp_df, keys["corners"],vertical_axis=soil.get("axis","Z") if soil else "Z").assign(Group="Corners"),
+        ], ignore_index=True)
+        settle_soil = pd.DataFrame()
+        if soil and soil_disp_df is not None and not soil_disp_df.empty:
+            settle_soil = pd.concat([
+                _settlement_mm_from_displacements(soil_disp_df, keys["vertex"], vertical_axis=soil.get("axis","Z")).assign(Group="Vertex"),
+                _settlement_mm_from_displacements(soil_disp_df, keys["edges"],  vertical_axis=soil.get("axis","Z")).assign(Group="Edges"),
+                _settlement_mm_from_displacements(soil_disp_df, keys["corners"],vertical_axis=soil.get("axis","Z")).assign(Group="Corners"),
+            ], ignore_index=True)
+
         # Write results workbook
         results_xlsx = base + "_results.xlsx"
         _ensure_xlsxwriter()
@@ -1618,6 +1806,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 soil_disp_df.to_excel(xlw, sheet_name="Soil_JointDisplacements", index=False)
             if not force_df.empty:
                 force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
+            if not shell_dead_df.empty:
+                shell_dead_df.to_excel(xlw, sheet_name="ShellResults_Dead", index=False)
+            if soil and not shell_soil_df.empty:
+                shell_soil_df.to_excel(xlw, sheet_name="ShellResults_Soil", index=False)
+            if not settle_dead.empty:
+                settle_dead.to_excel(xlw, sheet_name="Settlement_Dead_mm", index=False)
+            if soil and not settle_soil.empty:
+                settle_soil.to_excel(xlw, sheet_name="Settlement_Soil_mm", index=False)
 
             # Optional: dump soil_meta for debugging
             if soil_meta:
