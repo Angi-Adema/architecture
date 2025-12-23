@@ -1427,12 +1427,15 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model, nodes, E_mpa, vertical_axis=vax
                 )
 
-                overburden_meta = _assign_constant_overburden_to_all_areas(
-                    model,
-                    pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
-                    load_pattern=SOIL_LOAD_PATTERN,
-                    case_name=SOIL_CASE_NAME
-                )
+                if not _get_all_area_names(model):
+                    _log("[Soil] No area objects found; skipping overburden.")
+                else:
+                    overburden_meta =       _assign_constant_overburden_to_all_areas(
+                        model,
+                        pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
+                        load_pattern=SOIL_LOAD_PATTERN,
+                        case_name=SOIL_CASE_NAME
+                    )
 
                 # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
                 _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
@@ -1503,6 +1506,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             _log("[Error] While collecting results:")
             _log(traceback.format_exc())
             raise
+
+        _select_case(model, SOIL_CASE_NAME)
 
         # Soil-only response (constant overburden case)
         soil_disp_df = pd.DataFrame()
