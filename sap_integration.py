@@ -1444,7 +1444,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
                     load_pattern=SOIL_LOAD_PATTERN,
                     case_name=SOIL_CASE_NAME
-            )
+                )
 
                 # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
                 _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
