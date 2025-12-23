@@ -208,6 +208,9 @@ Checkbutton(
 E_soil_mpa_var = DoubleVar(value=50.0)  # MPa (user input)
 axis_var = StringVar(value="Z")         # vertical axis (X/Y/Z)
 
+gamma_soil_var = DoubleVar(value=18000.0)          # N/m^3
+burial_depth_vertex_var = DoubleVar(value=1.0)     # m (vertex below grade)
+
 # --- Material inputs --- #
 mat_name_var = StringVar(value="CONC40")      # the material name you'll use in sections
 mat_type_var = StringVar(value="Concrete")    # Concrete or Steel
