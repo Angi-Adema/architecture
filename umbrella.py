@@ -97,6 +97,29 @@ def validate_areas_against_nodes(areas, nodes):
             if cp not in node_names:
                 raise ValueError(f"Areas row {idx}: point '{p}' not found in Nodes.")
 
+def flip_nodes_in_z(nodes, align_rim_to_zero=True):
+    """
+    Flip the geometry in the global Z direction so that what was "down" becomes "up".
+    nodes: array-like rows [id/name, X, Y, Z]
+    align_rim_to_zero:
+        - True: after flipping, shift so the lowest Z becomes 0 (rim at Z=0)
+        - False: only invert (no translation)
+    Returns: flipped nodes array with same shape/type (numpy float)
+    """
+    import numpy as np
+
+    n = np.asarray(nodes, dtype=float).copy()
+    z = n[:, 3]
+
+    z_max = float(np.max(z))
+    n[:, 3] = z_max - z  # <-- the actual flip
+
+    if align_rim_to_zero:
+        z_min_new = float(np.min(n[:, 3]))
+        n[:, 3] -= z_min_new  # <-- shift so rim is at Z=0
+
+    return n
+
 
 # ---------------- Setup Paths (dev & PyInstaller) ---------------- #
 if getattr(sys, 'frozen', False):
