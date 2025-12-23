@@ -581,6 +581,12 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
+        
+        # FLIP so vertex ends up "up" (highest Z)
+        nodes_full = flip_nodes_in_z(nodes_full, align_rim_to_zero=True)
+
+        generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
+
         print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
 
         if not _has_plottable_nodes(nodes_full):
@@ -596,6 +602,11 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
+        # FLIP so vertex ends up "up" (highest Z)
+        nodes_full = flip_nodes_in_z(nodes_full, align_rim_to_zero=True)
+
+        generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
+
         print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
 
         if not _has_plottable_nodes(nodes_full):
@@ -610,6 +621,11 @@ def run():
         nodes_full, elements_full, areas_full = _replicate_radially(
             nodes, elements, areas_data, Ne
         )
+
+        # FLIP so vertex ends up "up" (highest Z)
+        nodes_full = flip_nodes_in_z(nodes_full, align_rim_to_zero=True)
+
+        generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
 
         print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
 
