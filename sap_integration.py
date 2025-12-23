@@ -1149,8 +1149,9 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
     if E_pa <= 0:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
 
-    TOL_Z = 1e-3
     zmin = float(nodes_df["Z"].min())
+    TOL_Z = 1e-3
+    
     base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= TOL_Z, ["Name", "X", "Y"]].copy()
     if base.empty:
         return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
