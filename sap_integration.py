@@ -8,6 +8,7 @@
 import importlib
 import os
 import math
+from pyexpat import model
 import re
 import pandas as pd
 import comtypes.client as cc
@@ -1370,9 +1371,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         _fix_base_nodes(model, nodes)
         _add_default_self_weight(model, "Dead", 1.0)
 
-        # ------------------------------------------------------------
+        
         # Soil actions: stiffness-based support + constant overburden
-        # ------------------------------------------------------------
         soil_meta = None
         if soil:
             try:
@@ -1394,10 +1394,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
                 _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
 
-                # Re-run analysis AFTER defining SOIL_CASE + assigning overburden loads
-                # (this guarantees SOIL_CASE results exist)
-                _run_analysis(model)
-
                 soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
                 _log("[Soil]", "Springs:", springs_meta, "Overburden:", overburden_meta)
@@ -1411,7 +1407,12 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             model.File.Save(sdb_path)
         except Exception:
             pass
-
+        
+        # Force cases into run set
+        _ensure_case_runs_in_analysis(model, "Dead")
+        if soil:
+            _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
+    
         # Run analysis once (Dead + any soil case that exists)
         _run_analysis(model)
 
