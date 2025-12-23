@@ -8,7 +8,6 @@
 import importlib
 import os
 import math
-from pyexpat import model
 import re
 import pandas as pd
 import comtypes.client as cc
@@ -1208,60 +1207,116 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
         "K_joint": K_joint
     }
 
-
-def _assign_constant_overburden_to_base_areas(
+def _assign_constant_overburden_to_all_areas(
     model,
-    nodes_df,
     areas_df,
     pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
     load_pattern=SOIL_LOAD_PATTERN,
     case_name=SOIL_CASE_NAME,
-    vertical_axis="Z"
+    coord_sys="Global",
+    replace=True
 ):
     """
-    Assign a constant surface pressure to areas that lie on the base (min Z).
-    Pressure is in N/m^2 (Pa) for N-m units.
+    Assign a constant surface pressure to ALL area (shell) objects.
 
-    NOTE on sign:
-      - If you want downward pressure, use +pressure
-      - If you want upward (soil reaction), use -pressure
+    Pressure units: N/m^2 (Pa) when SAP units are N-m.
     """
     if areas_df is None or areas_df.empty:
         return {"assigned_areas": 0}
 
+    # Ensure load pattern exists
     try:
-        model.LoadPatterns.Add(load_pattern, 1, 0.0)
+        model.LoadPatterns.Add(load_pattern, 1, 0.0)  # type 1 = Dead (fine for a pattern bucket)
     except Exception:
         pass
 
+    # Ensure load case exists and contains that pattern
     try:
         model.LoadCases.StaticLinear.SetCase(case_name)
         model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
     except Exception:
         pass
 
-    zmin = float(nodes_df["Z"].min())
-    node_z = dict(zip(nodes_df["Name"].astype(str), nodes_df["Z"].astype(float)))
-
     assigned = 0
     for _, r in areas_df.iterrows():
         an = str(r["Area"])
-        pts = [r.get("P1"), r.get("P2"), r.get("P3"), r.get("P4")]
-        pts = [str(p) for p in pts if p is not None and str(p).strip() != ""]
-        if len(pts) < 3:
+        if not an.strip():
             continue
+        try:
+            # "Projected" is usually safest for global-direction pressures
+            model.AreaObj.SetLoadSurfacePressure(
+                an,
+                load_pattern,
+                "Projected",
+                float(pressure_Npm2),
+                coord_sys,
+                bool(replace)
+            )
+            assigned += 1
+        except Exception:
+            pass
 
-        if all(abs(node_z.get(p, 1e9) - zmin) <= 1e-6 for p in pts):
-            try:
-                model.AreaObj.SetLoadSurfacePressure(
-                    an, load_pattern, "Projected",
-                    float(pressure_Npm2), "Global", True
-                )
-                assigned += 1
-            except Exception:
-                pass
+    return {
+        "assigned_areas": assigned,
+        "pressure": float(pressure_Npm2),
+        "pattern": load_pattern,
+        "case": case_name
+    }
 
-    return {"assigned_areas": assigned, "pressure": pressure_Npm2, "pattern": load_pattern, "case": case_name}
+# def _assign_constant_overburden_to_base_areas(
+#     model,
+#     nodes_df,
+#     areas_df,
+#     pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
+#     load_pattern=SOIL_LOAD_PATTERN,
+#     case_name=SOIL_CASE_NAME,
+#     vertical_axis="Z"
+# ):
+#     """
+#     Assign a constant surface pressure to areas that lie on the base (min Z).
+#     Pressure is in N/m^2 (Pa) for N-m units.
+
+#     NOTE on sign:
+#       - If you want downward pressure, use +pressure
+#       - If you want upward (soil reaction), use -pressure
+#     """
+#     if areas_df is None or areas_df.empty:
+#         return {"assigned_areas": 0}
+
+#     try:
+#         model.LoadPatterns.Add(load_pattern, 1, 0.0)
+#     except Exception:
+#         pass
+
+#     try:
+#         model.LoadCases.StaticLinear.SetCase(case_name)
+#         model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
+#     except Exception:
+#         pass
+
+#     zmin = float(nodes_df["Z"].min())
+#     node_z = dict(zip(nodes_df["Name"].astype(str), nodes_df["Z"].astype(float)))
+
+#     assigned = 0
+#     for _, r in areas_df.iterrows():
+#         an = str(r["Area"])
+#         pts = [r.get("P1"), r.get("P2"), r.get("P3"), r.get("P4")]
+#         pts = [str(p) for p in pts if p is not None and str(p).strip() != ""]
+#         if len(pts) < 3:
+#             continue
+        
+#         TOL_Z = 1e-3
+#         if all(abs(node_z.get(p, 1e9) - zmin) <= TOL_Z for p in pts):
+#             try:
+#                 model.AreaObj.SetLoadSurfacePressure(
+#                     an, load_pattern, "Projected",
+#                     float(pressure_Npm2), "Global", True
+#                 )
+#                 assigned += 1
+#             except Exception:
+#                 pass
+
+#     return {"assigned_areas": assigned, "pressure": pressure_Npm2, "pattern": load_pattern, "case": case_name}
 
 def _ensure_case_runs_in_analysis(model, case_name):
     """
@@ -1383,13 +1438,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model, nodes, E_mpa, vertical_axis=vax
                 )
 
-                overburden_meta = _assign_constant_overburden_to_base_areas(
-                    model, nodes, areas,
+                overburden_meta = _assign_constant_overburden_to_all_areas(
+                    model,
+                    areas,
                     pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
                     load_pattern=SOIL_LOAD_PATTERN,
-                    case_name=SOIL_CASE_NAME,
-                    vertical_axis=vax
-                )
+                    case_name=SOIL_CASE_NAME
+            )
 
                 # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
                 _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
