@@ -1412,7 +1412,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         nodes, elems, areas = _extract_model_to_dfs(model)
 
         # Supports + Dead load
-        _fix_base_nodes(model, nodes)
+        if soil:
+            # Base restraints for soil-spring model:
+            # Fix UX, UY; leave UZ free so the vertical spring can act
+            _fix_base_nodes(model, nodes, fix=(1, 1, 0, 1, 1, 1))
+        else:
+            # No-soil model: fully fixed base
+            _fix_base_nodes(model, nodes)
+
         _add_default_self_weight(model, "Dead", 1.0)
 
         
@@ -1427,6 +1434,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model, nodes, E_mpa, vertical_axis=vax
                 )
 
+                overburden_meta = {"assigned_areas": 0}
+
                 if not _get_all_area_names(model):
                     _log("[Soil] No area objects found; skipping overburden.")
                 else:
@@ -1436,6 +1445,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                         load_pattern=SOIL_LOAD_PATTERN,
                         case_name=SOIL_CASE_NAME
                     )
+
+                soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
                 # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
                 _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
@@ -1506,8 +1517,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             _log("[Error] While collecting results:")
             _log(traceback.format_exc())
             raise
-
-        _select_case(model, SOIL_CASE_NAME)
 
         # Soil-only response (constant overburden case)
         soil_disp_df = pd.DataFrame()
