@@ -790,13 +790,6 @@ def _extrema_summary(shell_df, label):
         _row("Fmin","min"),
     ]
 
-summary_rows = []
-summary_rows += _extrema_summary(shell_dead_df, "Dead")
-if soil:
-    summary_rows += _extrema_summary(shell_soil_df, "Soil")
-
-if summary_rows:
-    pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="ShellExtrema", index=False)
 
 def _pick_key_nodes_for_settlement(nodes_df, axis="Z"):
     """
@@ -1774,6 +1767,15 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             shell_dead_df = _collect_shell_forces_moments(model, area_names, case="Dead")
             if soil:
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
+
+        # ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
+        summary_rows = []
+        summary_rows += _extrema_summary(shell_dead_df, "Dead")
+        if soil:
+            summary_rows += _extrema_summary(shell_soil_df, "Soil")
+
+        if summary_rows:
+            pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="ShellExtrema", index=False)
 
         # --- Settlement at key nodes (mm) ---
         keys = _pick_key_nodes_for_settlement(nodes, axis=soil.get("axis","Z") if soil else "Z")
