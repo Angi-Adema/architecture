@@ -281,6 +281,12 @@ Entry(soil_frame, textvariable=E_soil_mpa_var, width=10).grid(row=1, column=1)
 Label(soil_frame, text='Vertical Axis', font=font_type).grid(sticky=W, row=2, column=0)
 OptionMenu(soil_frame, axis_var, "X", "Y", "Z").grid(row=2, column=1, sticky="we")
 
+Label(soil_frame, text='γ-soil (N/m³)', font=font_type).grid(sticky=W, row=3, column=0)
+Entry(soil_frame, textvariable=gamma_soil_var, width=10).grid(row=3, column=1)
+
+Label(soil_frame, text='Burial depth at vertex (m)', font=font_type).grid(sticky=W, row=4, column=0)
+Entry(soil_frame, textvariable=burial_depth_vertex_var, width=10).grid(row=4, column=1)
+
 
 def _unpack_geometry(ret):
     """
