@@ -9,6 +9,7 @@ import importlib
 import os
 import math
 import re
+from xml.parsers.expat import model
 import pandas as pd
 import comtypes.client as cc
 import numpy as np
@@ -1252,6 +1253,79 @@ def _assign_constant_overburden_to_all_areas(
         "case": case_name
     }
 
+def _assign_depth_based_overburden_to_all_areas(
+    model,
+    burial_depth_vertex_m=1.0,
+    gamma_soil_Npm3=18000.0,
+    vertical_axis="Z",
+    load_pattern=SOIL_LOAD_PATTERN,
+    case_name=SOIL_CASE_NAME,
+    joint_pattern_name="SOIL_DEPTH",
+    replace=True,
+):
+    # 1) Ensure load pattern + case exist
+    try:
+        model.LoadPatterns.Add(load_pattern, 1, 0.0)
+    except Exception:
+        pass
+    try:
+        model.LoadCases.StaticLinear.SetCase(case_name)
+        model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
+    except Exception:
+        pass
+
+    # 2) Get joints
+    joints = list(_iter_all_point_coords(model))
+    if not joints:
+        return {"assigned_areas": 0, "assigned_joints": 0}
+
+    ax = (vertical_axis or "Z").upper()
+    axis_index = 2 if ax == "Z" else (1 if ax == "Y" else 0)
+
+    # 3) Identify vertex elevation as the MAX along vertical axis (vertex should be "up" after flip)
+    z_vertex = max((x, y, z)[axis_index] for _, x, y, z in joints)
+
+    # grade elevation in model coords
+    z_grade = z_vertex + float(burial_depth_vertex_m)
+
+    # 4) Ensure joint pattern exists, then set joint pattern values = depth (m)
+    _ensure_joint_pattern_exists(model, joint_pattern_name)
+
+    assigned_joints = 0
+    for joint_name, x, y, z in joints:
+        elev = (x, y, z)[axis_index]
+        depth_m = max(0.0, z_grade - elev)
+        if _set_joint_pattern_value_for_point(model, joint_name, joint_pattern_name, depth_m):
+            assigned_joints += 1
+
+    # 5) Assign surface pressure "By Joint Pattern" to all areas with multiplier = gamma
+    area_names = _get_all_area_names(model)
+    assigned_areas = 0
+    for an in area_names:
+        ok = _assign_area_surface_pressure_by_joint_pattern(
+            model,
+            area_name=str(an),
+            load_pattern=load_pattern,
+            joint_pattern=joint_pattern_name,
+            multiplier=float(gamma_soil_Npm3),
+            coord_sys="Global",
+            replace=bool(replace)
+        )
+        if ok:
+            assigned_areas += 1
+
+    return {
+        "assigned_areas": assigned_areas,
+        "assigned_joints": assigned_joints,
+        "gamma_Npm3": float(gamma_soil_Npm3),
+        "burial_depth_vertex_m": float(burial_depth_vertex_m),
+        "z_vertex": float(z_vertex),
+        "z_grade": float(z_grade),
+        "pattern": load_pattern,
+        "case": case_name,
+        "joint_pattern": joint_pattern_name
+    }
+
 # def _assign_constant_overburden_to_base_areas(
 #     model,
 #     nodes_df,
@@ -1434,17 +1508,19 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model, nodes, E_mpa, vertical_axis=vax
                 )
 
-                overburden_meta = {"assigned_areas": 0}
+                d_vertex = float(soil.get("burial_depth_vertex_m", 1.0))
+                gamma = float(soil.get("gamma_Npm3", 18000.0))
 
-                if not _get_all_area_names(model):
-                    _log("[Soil] No area objects found; skipping overburden.")
-                else:
-                    overburden_meta =       _assign_constant_overburden_to_all_areas(
-                        model,
-                        pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
-                        load_pattern=SOIL_LOAD_PATTERN,
-                        case_name=SOIL_CASE_NAME
-                    )
+                overburden_meta = _assign_depth_based_overburden_to_all_areas(
+                    model,
+                    burial_depth_vertex_m=d_vertex,
+                    gamma_soil_Npm3=gamma,
+                    vertical_axis=soil.get("axis", "Z"),
+                    load_pattern=SOIL_LOAD_PATTERN,
+                    case_name=SOIL_CASE_NAME,
+                    joint_pattern_name="SOIL_DEPTH",
+                    replace=True
+                )
 
                 soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
