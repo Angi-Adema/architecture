@@ -1209,28 +1209,21 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
 
 def _assign_constant_overburden_to_all_areas(
     model,
-    areas_df,
     pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
     load_pattern=SOIL_LOAD_PATTERN,
     case_name=SOIL_CASE_NAME,
     coord_sys="Global",
     replace=True
 ):
-    """
-    Assign a constant surface pressure to ALL area (shell) objects.
-
-    Pressure units: N/m^2 (Pa) when SAP units are N-m.
-    """
-    if areas_df is None or areas_df.empty:
+    area_names = _get_all_area_names(model)
+    if not area_names:
         return {"assigned_areas": 0}
 
-    # Ensure load pattern exists
     try:
-        model.LoadPatterns.Add(load_pattern, 1, 0.0)  # type 1 = Dead (fine for a pattern bucket)
+        model.LoadPatterns.Add(load_pattern, 1, 0.0)
     except Exception:
         pass
 
-    # Ensure load case exists and contains that pattern
     try:
         model.LoadCases.StaticLinear.SetCase(case_name)
         model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
@@ -1238,14 +1231,10 @@ def _assign_constant_overburden_to_all_areas(
         pass
 
     assigned = 0
-    for _, r in areas_df.iterrows():
-        an = str(r["Area"])
-        if not an.strip():
-            continue
+    for an in area_names:
         try:
-            # "Projected" is usually safest for global-direction pressures
             model.AreaObj.SetLoadSurfacePressure(
-                an,
+                str(an),
                 load_pattern,
                 "Projected",
                 float(pressure_Npm2),
@@ -1440,7 +1429,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
                 overburden_meta = _assign_constant_overburden_to_all_areas(
                     model,
-                    areas,
                     pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
                     load_pattern=SOIL_LOAD_PATTERN,
                     case_name=SOIL_CASE_NAME
