@@ -1642,7 +1642,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         areas_in = _read_areas_sheet(input_xlsx)
 
         _log("[DEBUG] areas_in rows:", 0 if areas_in is None else len(areas_in))
-        
+
         if areas_in is not None and areas_in.empty:
             areas_in = None
     except Exception:
