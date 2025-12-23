@@ -293,32 +293,66 @@ def _read_elements_sheet(xlsx_path):
 
 def _read_areas_sheet(xlsx_path):
     """
-    Reads 'Areas' sheet. Supports either:
-      - no header row
-      - or a header row like: Area, P1, P2, P3, P4, Section, Material
+    Reads 'Areas' sheet.
+    Expected rows (no header in your writer):
+        AreaName, P1, P2, P3, P4, Section, Material
+
+    But we also tolerate a header row like:
+        Area, P1, P2, P3, P4, Section, Material
 
     Returns DataFrame columns:
-      Area, P1, P2, P3, P4, Section, Material
+        Area, P1, P2, P3, P4, Section, Material
     """
-    df = pd.read_excel(xlsx_path, sheet_name="Areas", header=None)
+    import pandas as pd
+    import numpy as np
+
+    try:
+        df = pd.read_excel(
+            xlsx_path,
+            sheet_name="Areas",
+            header=None,
+            engine="openpyxl"
+        )
+    except Exception:
+        return pd.DataFrame(columns=["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
 
     if df is None or df.empty:
         return pd.DataFrame(columns=["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
 
-    for c in range(df.shape[1], 7):
-        df[c] = None
+    # Drop fully empty rows (Excel often has trailing blank rows)
+    df = df.dropna(how="all").reset_index(drop=True)
+    if df.empty:
+        return pd.DataFrame(columns=["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
 
-    first = df.iloc[0].astype(str).str.strip().str.lower().tolist()
-    header_hits = {"area", "p1", "p2", "p3", "p4", "section", "material"}
-    if any(v in header_hits for v in first):
+    # Ensure at least 7 columns (pad with None)
+    while df.shape[1] < 7:
+        df[df.shape[1]] = None
+
+    # Only keep first 7 columns (ignore any extras)
+    df = df.iloc[:, :7]
+
+    # Detect header row ONLY if it matches strongly
+    def _norm(s):
+        return str(s).strip().lower()
+
+    first = [_norm(v) for v in df.iloc[0].tolist()]
+    header_tokens = {"area", "areaname", "p1", "p2", "p3", "p4", "section", "material"}
+
+    # Count matches instead of "any" to avoid false positives
+    hits = sum(1 for v in first if v in header_tokens)
+    if hits >= 3:  # require at least 3 header-like tokens
         df = df.iloc[1:].reset_index(drop=True)
 
-    df = df.rename(columns={
-        0: "Area", 1: "P1", 2: "P2", 3: "P3", 4: "P4", 5: "Section", 6: "Material"
-    })[["Area", "P1", "P2", "P3", "P4", "Section", "Material"]]
+    # Apply column names
+    df.columns = ["Area", "P1", "P2", "P3", "P4", "Section", "Material"]
 
-    df = df[df["Area"].notna() & (df["Area"].astype(str).str.strip() != "")].copy()
+    # Drop rows with missing/blank Area
+    df["Area"] = df["Area"].astype(str).str.strip()
+    df = df[df["Area"].notna() & (df["Area"] != "") & (df["Area"].str.lower() != "nan")].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["Area", "P1", "P2", "P3", "P4", "Section", "Material"])
 
+    # Canonicalize point IDs: 1 / 1.0 / "1.0" -> "1"
     def _canon_point(v):
         if v is None:
             return None
@@ -331,6 +365,7 @@ def _read_areas_sheet(xlsx_path):
                 return None
             if f.is_integer():
                 return str(int(f))
+            # If you ever truly have non-integer point IDs, keep them
             return str(f)
         except Exception:
             return s
@@ -338,9 +373,12 @@ def _read_areas_sheet(xlsx_path):
     for col in ["P1", "P2", "P3", "P4"]:
         df[col] = df[col].apply(_canon_point)
 
-    df["P4"] = df["P4"].where(df["P4"].notna() & (df["P4"].astype(str).str.len() > 0), None)
-    df["Section"] = df["Section"].where(df["Section"].notna(), None)
-    df["Material"] = df["Material"].where(df["Material"].notna(), None)
+    # Normalize Section/Material: keep None if blank
+    for col in ["Section", "Material"]:
+        df[col] = df[col].apply(lambda v: None if v is None or str(v).strip() in ("", "nan", "None") else str(v).strip())
+
+    # Drop any area rows missing required connectivity (P1..P3 required; P4 optional for tri)
+    df = df[df["P1"].notna() & df["P2"].notna() & df["P3"].notna()].copy()
 
     return df.reset_index(drop=True)
 
@@ -1602,6 +1640,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     try:
         areas_in = _read_areas_sheet(input_xlsx)
+
+        _log("[DEBUG] areas_in rows:", 0 if areas_in is None else len(areas_in))
+        
         if areas_in is not None and areas_in.empty:
             areas_in = None
     except Exception:
