@@ -1809,12 +1809,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             if soil:
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
 
-        # ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
-        summary_rows = []
-        summary_rows += _extrema_summary(shell_dead_df, "Dead")
-        if soil:
-            summary_rows += _extrema_summary(shell_soil_df, "Soil")
-
         if summary_rows:
             pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="ShellExtrema", index=False)
 
@@ -1838,6 +1832,17 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         _ensure_xlsxwriter()
 
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
+
+            # ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
+            summary_rows = []
+            summary_rows += _extrema_summary(shell_dead_df, "Dead")
+            if soil:
+                summary_rows += _extrema_summary(shell_soil_df, "Soil")
+            if summary_rows:
+                pd.DataFrame(summary_rows).to_excel(
+                    xlw, sheet_name="ShellExtrema", index=False
+                )
+
             nodes.to_excel(xlw, sheet_name="Nodes", index=False)
             elems.to_excel(xlw, sheet_name="Elements", index=False)
             if areas is not None and not areas.empty:
