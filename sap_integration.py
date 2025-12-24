@@ -1779,7 +1779,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
                 soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
-                import json
                 _log("[Soil] " + json.dumps(
                 {"springs": springs_meta, "overburden": overburden_meta},
                 default=str
