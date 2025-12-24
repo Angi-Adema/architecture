@@ -108,17 +108,23 @@ def flip_nodes_in_z(nodes, align_rim_to_zero=True):
     """
     import numpy as np
 
-    n = np.asarray(nodes, dtype=float).copy()
-    z = n[:, 3]
+    arr = np.asarray(nodes, dtype=object).copy()
 
+    # force XYZ columns to float
+    arr[:, 1] = arr[:, 1].astype(float)
+    arr[:, 2] = arr[:, 2].astype(float)
+    arr[:, 3] = arr[:, 3].astype(float)
+
+    z = arr[:, 3].astype(float)
     z_max = float(np.max(z))
-    n[:, 3] = z_max - z  # <-- the actual flip
+
+    arr[:, 3] = (z_max - z)
 
     if align_rim_to_zero:
-        z_min_new = float(np.min(n[:, 3]))
-        n[:, 3] -= z_min_new  # <-- shift so rim is at Z=0
+        z_min_new = float(np.min(arr[:, 3].astype(float)))
+        arr[:, 3] = arr[:, 3].astype(float) - z_min_new
 
-    return n
+    return arr
 
 def preview_3d(nodes, areas=None, title="Geometry Preview"):
     """
@@ -177,7 +183,8 @@ def preview_3d(nodes, areas=None, title="Geometry Preview"):
     ax.set_ylim(mid_y - max_range/2, mid_y + max_range/2)
     ax.set_zlim(mid_z - max_range/2, mid_z + max_range/2)
 
-    plt.show()
+    plt.show(block=False)
+    plt.pause(0.001)
 
 
 # ---------------- Setup Paths (dev & PyInstaller) ---------------- #
