@@ -580,6 +580,7 @@ def run():
             print("\n=== Umbrella caught exception ===\n", flush=True)
             traceback.print_exc()
             messagebox.showwarning("SAP2000 Error", f"Failed to run SAP2000 analysis:\n{e}")
+            return
 
     # -------- generate each selected geometry and analyze --------
     if var_hypar.get():
