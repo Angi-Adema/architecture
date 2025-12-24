@@ -1780,9 +1780,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
                 _log("[Soil] " + json.dumps(
-                {"springs": springs_meta, "overburden": overburden_meta},
-                default=str
-            ))
+                    {"springs": springs_meta, "overburden": overburden_meta},
+                    default=str
+                ))
             except Exception as e:
                 _log("[Soil] Skipped:", e)
 
