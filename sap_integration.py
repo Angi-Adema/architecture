@@ -1681,6 +1681,10 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # Extract the actual built model
         nodes, elems, areas = _extract_model_to_dfs(model)
 
+        # DEBUG: confirm what actually exists.
+        _log("[DEBUG] Extracted:", f"nodes={len(nodes)} elems={len(elems)} areas_df={0 if areas is None else len(areas)}")
+        _log("[DEBUG] SAP area objects:", len(_get_all_area_names(model)))
+
         # Supports + Dead load
         if soil:
             # Base restraints for soil-spring model:
@@ -1717,8 +1721,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     joint_pattern_name="SOIL_DEPTH",
                     replace=True
                 )
-
-                soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
                 # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
                 _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
@@ -1873,7 +1875,10 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                         "axis": soil.get("axis", "Z"),
                         "springs_assigned": soil_meta.get("springs", {}).get("assigned", 0),
                         "K_joint_Npm": soil_meta.get("springs", {}).get("K_joint", None),
-                        "overburden_pressure_Npm2": soil_meta.get("overburden", {}).get("pressure", None),
+                        "gamma_Npm3": soil_meta.get("overburden", {}).get("gamma_Npm3", None),
+                        "burial_depth_vertex_m": soil_meta.get("overburden", {}).get("burial_depth_vertex_m", None),
+                        "z_grade": soil_meta.get("overburden", {}).get("z_grade", None),
+                        "z_vertex": soil_meta.get("overburden", {}).get("z_vertex", None),
                         "overburden_assigned_areas": soil_meta.get("overburden", {}).get("assigned_areas", 0),
                         "overburden_pattern": soil_meta.get("overburden", {}).get("pattern", None),
                         "overburden_case": soil_meta.get("overburden", {}).get("case", None),
