@@ -136,21 +136,39 @@ def preview_3d(nodes, areas=None, title="Geometry Preview"):
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-    n = np.asarray(nodes, dtype=float)
-    if n.size == 0:
+    arr = np.asarray(nodes, dtype=object)
+    if arr.size == 0:
         return
+
+    # Only cast XYZ columns to float (DO NOT cast ID column)
+    try:
+        xyz = np.asarray(arr[:, 1:4], dtype=float)
+    except Exception:
+        # If XYZ can't be cast, nothing to plot
+        return
+
+    if xyz.size == 0 or not np.isfinite(xyz).all():
+        # If there are NaNs/Infs everywhere, don't crash
+        if not np.isfinite(xyz).any():
+            return
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
     ax.set_title(title)
 
     # Scatter nodes
-    ax.scatter(n[:, 1], n[:, 2], n[:, 3], s=3)
+    ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], s=3)
 
     # Optional: draw shell faces if areas provided
     if areas is not None and len(areas) > 0:
         # Build map: node_id -> (x,y,z)
-        node_map = {int(row[0]): (row[1], row[2], row[3]) for row in n}
+        node_map = {}
+        for i in range(arr.shape[0]):
+            try:
+                nid = int(float(arr[i, 0]))
+                node_map[nid] = (float(xyz[i, 0]), float(xyz[i, 1]), float(xyz[i, 2]))
+            except Exception:
+                continue
 
         polys = []
         for row in np.asarray(areas, dtype=object):
@@ -174,15 +192,16 @@ def preview_3d(nodes, areas=None, title="Geometry Preview"):
     ax.set_zlabel("Z")
 
     # Equal-ish scaling so it doesn’t look squished
-    xs, ys, zs = n[:, 1], n[:, 2], n[:, 3]
-    max_range = max(xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min())
-    mid_x = 0.5*(xs.max()+xs.min())
-    mid_y = 0.5*(ys.max()+ys.min())
-    mid_z = 0.5*(zs.max()+zs.min())
-    ax.set_xlim(mid_x - max_range/2, mid_x + max_range/2)
-    ax.set_ylim(mid_y - max_range/2, mid_y + max_range/2)
-    ax.set_zlim(mid_z - max_range/2, mid_z + max_range/2)
+    xs, ys, zs = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    max_range = max(xs.max() - xs.min(), ys.max() - ys.min(), zs.max() - zs.min())
+    mid_x = 0.5 * (xs.max() + xs.min())
+    mid_y = 0.5 * (ys.max() + ys.min())
+    mid_z = 0.5 * (zs.max() + zs.min())
+    ax.set_xlim(mid_x - max_range / 2, mid_x + max_range / 2)
+    ax.set_ylim(mid_y - max_range / 2, mid_y + max_range / 2)
+    ax.set_zlim(mid_z - max_range / 2, mid_z + max_range / 2)
 
+    # Non-blocking show (keeps Tkinter responsive)
     plt.show(block=False)
     plt.pause(0.001)
 
