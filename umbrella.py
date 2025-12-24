@@ -120,6 +120,65 @@ def flip_nodes_in_z(nodes, align_rim_to_zero=True):
 
     return n
 
+def preview_3d(nodes, areas=None, title="Geometry Preview"):
+    """
+    Opens an interactive Matplotlib 3D preview you can rotate/zoom.
+    nodes: array-like rows [id, X, Y, Z]
+    areas: optional array/list rows [AreaName, P1, P2, P3, P4, Section, Material]
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    n = np.asarray(nodes, dtype=float)
+    if n.size == 0:
+        return
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_title(title)
+
+    # Scatter nodes
+    ax.scatter(n[:, 1], n[:, 2], n[:, 3], s=3)
+
+    # Optional: draw shell faces if areas provided
+    if areas is not None and len(areas) > 0:
+        # Build map: node_id -> (x,y,z)
+        node_map = {int(row[0]): (row[1], row[2], row[3]) for row in n}
+
+        polys = []
+        for row in np.asarray(areas, dtype=object):
+            # row: [AreaName, P1, P2, P3, P4, ...]
+            try:
+                p1 = int(float(row[1])); p2 = int(float(row[2]))
+                p3 = int(float(row[3])); p4 = int(float(row[4]))
+            except Exception:
+                continue
+
+            if p1 in node_map and p2 in node_map and p3 in node_map and p4 in node_map:
+                polys.append([node_map[p1], node_map[p2], node_map[p3], node_map[p4]])
+
+        if polys:
+            pc = Poly3DCollection(polys, alpha=0.25)
+            ax.add_collection3d(pc)
+
+    # Axis labels (the "values on the edges" you mentioned)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+    # Equal-ish scaling so it doesn’t look squished
+    xs, ys, zs = n[:, 1], n[:, 2], n[:, 3]
+    max_range = max(xs.max()-xs.min(), ys.max()-ys.min(), zs.max()-zs.min())
+    mid_x = 0.5*(xs.max()+xs.min())
+    mid_y = 0.5*(ys.max()+ys.min())
+    mid_z = 0.5*(zs.max()+zs.min())
+    ax.set_xlim(mid_x - max_range/2, mid_x + max_range/2)
+    ax.set_ylim(mid_y - max_range/2, mid_y + max_range/2)
+    ax.set_zlim(mid_z - max_range/2, mid_z + max_range/2)
+
+    plt.show()
+
 
 # ---------------- Setup Paths (dev & PyInstaller) ---------------- #
 if getattr(sys, 'frozen', False):
@@ -591,18 +650,21 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
-        
-        # FLIP so vertex ends up "up" (highest Z)
+        # FLIP so vertex ends up "up" (highest Z) AND rim at Z=0
         nodes_full = flip_nodes_in_z(nodes_full, align_rim_to_zero=True)
 
-        generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
+        # Validate we have plottable coordinates BEFORE preview/export
+        if not _has_plottable_nodes(nodes_full):
+            messagebox.showerror("Geometry error", "Hypar produced no valid XYZ coordinates. Check inputs.")
+            return
 
         print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
 
-        if not _has_plottable_nodes(nodes_full):
-            messagebox.showerror("Geometry error", "Hypar produced no valid XYZ coordinates. Check inputs.")
-        else:
-            generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
+        # Preview (interactive 3D rotate) — AFTER flip so you see the final orientation
+        preview_3d(nodes_full, areas_full, title=f"Hypar Preview Ne={Ne} H={H} Re={Re} N={N}")
+
+        # Export + run SAP ONCE
+        generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
 
     if var_pyramid.get():
         ret = pyramid(H, Re, Ne, N)
@@ -612,17 +674,21 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
-        # FLIP so vertex ends up "up" (highest Z)
+        # FLIP so vertex ends up "up" (highest Z) AND rim at Z=0
         nodes_full = flip_nodes_in_z(nodes_full, align_rim_to_zero=True)
 
-        generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
-
-        print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
-
+        # Validate we have plottable coordinates BEFORE preview/export
         if not _has_plottable_nodes(nodes_full):
             messagebox.showerror("Geometry error", "Pyramid produced no valid XYZ coordinates. Check inputs.")
-        else:
-            generate_and_export("Pyramid", nodes_full, elements_full, areas=areas_full)
+            return
+        
+        print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
+
+        # Preview (interactive 3D rotate) - AFTER flip so you see the final orientation
+        preview_3d(nodes_full, areas_full, title=f"Pyramid Preview Ne={Ne} H={H} Re={Re} N={N}")
+
+        # Export + run SAP ONCE
+        generate_and_export("Pyramid", nodes_full, elements_full, areas=areas_full)
 
     if var_dome.get():
         ret = dome(H, Re, Ne, N)
@@ -632,17 +698,21 @@ def run():
             nodes, elements, areas_data, Ne
         )
 
-        # FLIP so vertex ends up "up" (highest Z)
+        # FLIP so vertex ends up "up" (highest Z) AND rim at Z=0
         nodes_full = flip_nodes_in_z(nodes_full, align_rim_to_zero=True)
 
-        generate_and_export("Hypar", nodes_full, elements_full, areas=areas_full)
-
-        print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
-
+        # Validate we have plottable coordinates BEFORE preview/export
         if not _has_plottable_nodes(nodes_full):
             messagebox.showerror("Geometry error", "Dome produced no valid XYZ coordinates. Check inputs.")
-        else:
-            generate_and_export("Dome", nodes_full, elements_full, areas=areas_full)
+            return
+        
+        print("[DEBUG] areas_full:", None if areas_full is None else len(areas_full), flush=True)
+
+        # Preview (interactive 3D rotate) - AFTER flip so you see the final orientation
+        preview_3d(nodes_full, areas_full, title=f"Dome Preview Ne={Ne} H={H} Re={Re} N={N}")
+
+        # Export + run SAP ONCE
+        generate_and_export("Dome", nodes_full, elements_full, areas=areas_full)
 
 
 def quit_app():
