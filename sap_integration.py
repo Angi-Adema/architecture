@@ -1809,23 +1809,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             if soil:
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
 
-        if summary_rows:
-            pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="ShellExtrema", index=False)
-
-        # --- Settlement at key nodes (mm) ---
-        keys = _pick_key_nodes_for_settlement(nodes, axis=soil.get("axis","Z") if soil else "Z")
-        settle_dead = pd.concat([
-            _settlement_mm_from_displacements(disp_df, keys["vertex"], vertical_axis=soil.get("axis","Z") if soil else "Z").assign(Group="Vertex"),
-            _settlement_mm_from_displacements(disp_df, keys["edges"],  vertical_axis=soil.get("axis","Z") if soil else "Z").assign(Group="Edges"),
-            _settlement_mm_from_displacements(disp_df, keys["corners"],vertical_axis=soil.get("axis","Z") if soil else "Z").assign(Group="Corners"),
-        ], ignore_index=True)
-        settle_soil = pd.DataFrame()
-        if soil and soil_disp_df is not None and not soil_disp_df.empty:
-            settle_soil = pd.concat([
-                _settlement_mm_from_displacements(soil_disp_df, keys["vertex"], vertical_axis=soil.get("axis","Z")).assign(Group="Vertex"),
-                _settlement_mm_from_displacements(soil_disp_df, keys["edges"],  vertical_axis=soil.get("axis","Z")).assign(Group="Edges"),
-                _settlement_mm_from_displacements(soil_disp_df, keys["corners"],vertical_axis=soil.get("axis","Z")).assign(Group="Corners"),
-            ], ignore_index=True)
+        
 
         # Write results workbook
         results_xlsx = base + "_results.xlsx"
@@ -1833,15 +1817,37 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
 
-            # ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
+# ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
             summary_rows = []
             summary_rows += _extrema_summary(shell_dead_df, "Dead")
             if soil:
                 summary_rows += _extrema_summary(shell_soil_df, "Soil")
+
             if summary_rows:
-                pd.DataFrame(summary_rows).to_excel(
-                    xlw, sheet_name="ShellExtrema", index=False
-                )
+                pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="ShellExtrema", index=False)
+
+            # --- Settlement at key nodes (mm) ---
+            vaxis = (soil.get("axis", "Z") if soil else "Z")
+            keys = _pick_key_nodes_for_settlement(nodes, axis=vaxis)
+
+            settle_dead = pd.concat([
+                _settlement_mm_from_displacements(disp_df, keys["vertex"],  vertical_axis=vaxis).assign(Group="Vertex"),
+                _settlement_mm_from_displacements(disp_df, keys["edges"],   vertical_axis=vaxis).assign(Group="Edges"),
+                _settlement_mm_from_displacements(disp_df, keys["corners"], vertical_axis=vaxis).assign(Group="Corners"),
+            ], ignore_index=True)
+
+            if not settle_dead.empty:
+                settle_dead.to_excel(xlw, sheet_name="Settlement_Dead_mm", index=False)
+
+            if soil and (soil_disp_df is not None) and (not soil_disp_df.empty):
+                settle_soil = pd.concat([
+                    _settlement_mm_from_displacements(soil_disp_df, keys["vertex"],  vertical_axis=vaxis).assign(Group="Vertex"),
+                    _settlement_mm_from_displacements(soil_disp_df, keys["edges"],   vertical_axis=vaxis).assign(Group="Edges"),
+                    _settlement_mm_from_displacements(soil_disp_df, keys["corners"], vertical_axis=vaxis).assign(Group="Corners"),
+                ], ignore_index=True)
+
+                if not settle_soil.empty:
+                    settle_soil.to_excel(xlw, sheet_name="Settlement_Soil_mm", index=False)
 
             nodes.to_excel(xlw, sheet_name="Nodes", index=False)
             elems.to_excel(xlw, sheet_name="Elements", index=False)
@@ -1858,10 +1864,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 shell_dead_df.to_excel(xlw, sheet_name="ShellResults_Dead", index=False)
             if soil and not shell_soil_df.empty:
                 shell_soil_df.to_excel(xlw, sheet_name="ShellResults_Soil", index=False)
-            if not settle_dead.empty:
-                settle_dead.to_excel(xlw, sheet_name="Settlement_Dead_mm", index=False)
-            if soil and not settle_soil.empty:
-                settle_soil.to_excel(xlw, sheet_name="Settlement_Soil_mm", index=False)
 
             # Optional: dump soil_meta for debugging
             if soil_meta:
