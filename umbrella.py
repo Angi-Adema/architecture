@@ -603,6 +603,8 @@ def run():
         soil_spec = {
             "E_soil_mpa": float(E_soil_mpa_var.get()),
             "axis": axis_var.get(),
+            "gamma_Npm3": float(gamma_soil_var.get()),
+            "burial_depth_vertex_m": float(burial_depth_vertex_var.get()),
         }
 
         material_spec = {
