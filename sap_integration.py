@@ -6,6 +6,7 @@
 # - Exports model + results to <input>_results.xlsx
 
 import importlib
+import json
 import os
 import math
 import re
@@ -13,6 +14,44 @@ from xml.parsers.expat import model
 import pandas as pd
 import comtypes.client as cc
 import numpy as np
+
+def _sap_get_name_list(get_name_list_result):
+    """
+    Normalize SAP2000 COM GetNameList() results into a Python list[str].
+
+    Possible returns:
+      (count:int, names:tuple/list)
+      (ret:int, count:int, names:tuple/list)
+      Sometimes `names` can be a single string.
+    """
+    r = get_name_list_result
+
+    if r is None:
+        return []
+
+    # If comtypes gives a non-tuple, just wrap
+    if not isinstance(r, tuple):
+        if isinstance(r, str):
+            return [r]
+        return list(r)
+
+    # Common shapes
+    if len(r) == 2:
+        count, names = r
+    elif len(r) == 3:
+        _ret, count, names = r
+    else:
+        # last item usually the names
+        names = r[-1]
+
+    if names is None:
+        return []
+
+    if isinstance(names, str):
+        return [names]
+
+    # names can be tuple/list/array
+    return [str(x) for x in list(names)]
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
 def _ensure_xlsxwriter():
@@ -892,26 +931,10 @@ def _settlement_mm_from_displacements(disp_df, node_list, vertical_axis="Z"):
 # ---------------- Area & Pattern Automation ---------------- #
 
 def _get_all_area_names(model):
-    """Returns list of all area (shell) object names."""
     try:
-        out = model.AreaObj.GetNameList()
+        return _sap_get_name_list(model.AreaObj.GetNameList())
     except Exception:
         return []
-
-    if isinstance(out, tuple):
-        if len(out) == 2:
-            _, names = out
-        elif len(out) == 3:
-            _, _, names = out
-        else:
-            names = out[-1]
-    else:
-        names = out
-
-    try:
-        return list(names)
-    except Exception:
-        return [names]
 
 
 def _get_joint_xyz(model, joint_name):
@@ -1069,38 +1092,67 @@ def _iter_all_areas(model):
 
 
 def _extract_model_to_dfs(model):
-    """
-    After SAP2000 has built the model, pull out full Nodes/Elements/Areas
-    tables so the results workbook matches the actual geometry.
-    """
-    node_rows = []
-    for nm, x, y, z in _iter_all_point_coords(model):
-        node_rows.append({"Name": str(nm), "X": x, "Y": y, "Z": z})
-    nodes_df = pd.DataFrame(node_rows)
+    # --- Points ---
+    pt_names = _sap_get_name_list(model.PointObj.GetNameList())
 
-    frame_rows = []
-    for nm, i_pt, j_pt, sec in _iter_all_frames(model):
-        frame_rows.append({
-            "Frame": str(nm),
-            "I": str(i_pt) if i_pt is not None else "",
-            "J": str(j_pt) if j_pt is not None else "",
-            "Section": sec,
-            "Material": None,
-        })
-    elems_df = pd.DataFrame(frame_rows)
+    nodes_rows = []
+    for nm in pt_names:
+        try:
+            # Different SAP versions: sometimes returns (x,y,z) or (x,y,z,ret) etc.
+            res = model.PointObj.GetCoordCartesian(nm)
+            # Flatten common cases
+            if isinstance(res, tuple) and len(res) >= 3:
+                x, y, z = float(res[0]), float(res[1]), float(res[2])
+            else:
+                continue
+            nodes_rows.append([str(nm), x, y, z])
+        except Exception:
+            continue
 
-    area_rows = []
-    for an, pts, sec in _iter_all_areas(model):
-        area_rows.append({
-            "Area": str(an),
-            "P1": pts[0] if len(pts) > 0 else None,
-            "P2": pts[1] if len(pts) > 1 else None,
-            "P3": pts[2] if len(pts) > 2 else None,
-            "P4": pts[3] if len(pts) > 3 else None,
-            "Section": sec,
-            "Material": None,
-        })
-    areas_df = pd.DataFrame(area_rows)
+    nodes_df = pd.DataFrame(nodes_rows, columns=["Name", "X", "Y", "Z"])
+
+    # --- Frames (optional) ---
+    frame_names = _sap_get_name_list(model.FrameObj.GetNameList())
+    elems_rows = []
+    for fn in frame_names:
+        try:
+            res = model.FrameObj.GetPoints(fn)
+            # usually (PointI, PointJ) or (ret, PointI, PointJ)
+            if isinstance(res, tuple) and len(res) == 2:
+                pi, pj = res
+            elif isinstance(res, tuple) and len(res) >= 3:
+                pi, pj = res[-2], res[-1]
+            else:
+                continue
+            elems_rows.append([str(fn), str(pi), str(pj)])
+        except Exception:
+            continue
+
+    elems_df = pd.DataFrame(elems_rows, columns=["Frame", "I", "J"])
+
+    # --- Areas ---
+    area_names = _sap_get_name_list(model.AreaObj.GetNameList())
+    areas_rows = []
+    for an in area_names:
+        try:
+            res = model.AreaObj.GetPoints(an)
+            # usually (NumPoints, [p1,p2,p3,p4]) OR (ret, NumPoints, [..])
+            if isinstance(res, tuple) and len(res) == 2:
+                npts, pts = res
+            elif isinstance(res, tuple) and len(res) >= 3:
+                npts, pts = res[-2], res[-1]
+            else:
+                continue
+
+            pts_list = list(pts) if pts is not None else []
+            # pad to 4 for quads
+            while len(pts_list) < 4:
+                pts_list.append("")
+            areas_rows.append([str(an)] + [str(p) for p in pts_list[:4]])
+        except Exception:
+            continue
+
+    areas_df = pd.DataFrame(areas_rows, columns=["Area", "P1", "P2", "P3", "P4"])
 
     return nodes_df, elems_df, areas_df
 
@@ -1727,7 +1779,11 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
                 soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
-                _log("[Soil]", "Springs:", springs_meta, "Overburden:", overburden_meta)
+                import json
+                _log("[Soil] " + json.dumps(
+                {"springs": springs_meta, "overburden": overburden_meta},
+                default=str
+            ))
             except Exception as e:
                 _log("[Soil] Skipped:", e)
 
