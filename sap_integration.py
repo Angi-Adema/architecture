@@ -1092,20 +1092,24 @@ def _iter_all_areas(model):
 
 
 def _extract_model_to_dfs(model):
+    """
+    Robustly extract points/frames/areas from the currently built SAP model.
+
+    Fixes COM return-shape differences like:
+      GetCoordCartesian(name) -> (ret, x, y, z) OR (x, y, z)
+      GetNameList()           -> (count, names) OR (ret, count, names)
+    """
+
     # --- Points ---
     pt_names = _sap_get_name_list(model.PointObj.GetNameList())
 
     nodes_rows = []
     for nm in pt_names:
+        name = str(nm)
         try:
-            # Different SAP versions: sometimes returns (x,y,z) or (x,y,z,ret) etc.
-            res = model.PointObj.GetCoordCartesian(nm)
-            # Flatten common cases
-            if isinstance(res, tuple) and len(res) >= 3:
-                x, y, z = float(res[0]), float(res[1]), float(res[2])
-            else:
-                continue
-            nodes_rows.append([str(nm), x, y, z])
+            # Prefer your already-robust helper that handles ("Global") fallback
+            x, y, z = _get_joint_xyz(model, name)
+            nodes_rows.append([name, float(x), float(y), float(z)])
         except Exception:
             continue
 
@@ -1115,16 +1119,17 @@ def _extract_model_to_dfs(model):
     frame_names = _sap_get_name_list(model.FrameObj.GetNameList())
     elems_rows = []
     for fn in frame_names:
+        fname = str(fn)
         try:
-            res = model.FrameObj.GetPoints(fn)
-            # usually (PointI, PointJ) or (ret, PointI, PointJ)
-            if isinstance(res, tuple) and len(res) == 2:
-                pi, pj = res
-            elif isinstance(res, tuple) and len(res) >= 3:
+            res = model.FrameObj.GetPoints(fname)
+            # Common: (ret, pi, pj)
+            if isinstance(res, tuple) and len(res) >= 3:
                 pi, pj = res[-2], res[-1]
+            elif isinstance(res, tuple) and len(res) == 2:
+                pi, pj = res
             else:
                 continue
-            elems_rows.append([str(fn), str(pi), str(pj)])
+            elems_rows.append([fname, str(pi), str(pj)])
         except Exception:
             continue
 
@@ -1134,21 +1139,26 @@ def _extract_model_to_dfs(model):
     area_names = _sap_get_name_list(model.AreaObj.GetNameList())
     areas_rows = []
     for an in area_names:
+        area = str(an)
         try:
-            res = model.AreaObj.GetPoints(an)
-            # usually (NumPoints, [p1,p2,p3,p4]) OR (ret, NumPoints, [..])
-            if isinstance(res, tuple) and len(res) == 2:
-                npts, pts = res
-            elif isinstance(res, tuple) and len(res) >= 3:
-                npts, pts = res[-2], res[-1]
+            res = model.AreaObj.GetPoints(area)
+            # Common: (ret, npts, names)
+            if isinstance(res, tuple) and len(res) >= 3:
+                npts, pts = int(res[-2]), res[-1]
+            elif isinstance(res, tuple) and len(res) == 2:
+                npts, pts = int(res[0]), res[1]
             else:
                 continue
 
             pts_list = list(pts) if pts is not None else []
-            # pad to 4 for quads
+            pts_list = [str(p) for p in pts_list[:npts]]
+
+            # pad to 4
             while len(pts_list) < 4:
                 pts_list.append("")
-            areas_rows.append([str(an)] + [str(p) for p in pts_list[:4]])
+
+            areas_rows.append([area] + pts_list[:4])
+
         except Exception:
             continue
 
