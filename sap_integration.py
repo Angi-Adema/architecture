@@ -1093,45 +1093,67 @@ def _iter_all_areas(model):
 
 def _extract_model_to_dfs(model):
     """
-    Robustly extract points/frames/areas from the currently built SAP model.
-
-    Fixes COM return-shape differences like:
-      GetCoordCartesian(name) -> (ret, x, y, z) OR (x, y, z)
-      GetNameList()           -> (count, names) OR (ret, count, names)
+    Robustly extract the *actual* SAP model into DataFrames.
+    Handles SAP2000 COM return-shape weirdness across versions.
     """
+    def _coord(nm: str):
+        # SAP often returns one of:
+        # (ret, x, y, z)  OR  (x, y, z)  OR  (ret, x, y, z, csys) etc.
+        for args in [(nm, "Global"), (nm,)]:
+            try:
+                res = model.PointObj.GetCoordCartesian(*args)
+            except Exception:
+                continue
+
+            if not isinstance(res, (tuple, list)):
+                continue
+
+            # pull out numeric values in order
+            nums = []
+            for v in res:
+                try:
+                    fv = float(v)
+                    nums.append(fv)
+                except Exception:
+                    pass
+
+            # If we found at least 3 floats, assume first 3 are x,y,z
+            if len(nums) >= 3:
+                return nums[0], nums[1], nums[2]
+
+        return None
 
     # --- Points ---
     pt_names = _sap_get_name_list(model.PointObj.GetNameList())
-
     nodes_rows = []
     for nm in pt_names:
-        name = str(nm)
-        try:
-            # Prefer your already-robust helper that handles ("Global") fallback
-            x, y, z = _get_joint_xyz(model, name)
-            nodes_rows.append([name, float(x), float(y), float(z)])
-        except Exception:
+        nm = str(nm)
+        xyz = _coord(nm)
+        if xyz is None:
             continue
+        x, y, z = xyz
+        nodes_rows.append([nm, x, y, z])
 
     nodes_df = pd.DataFrame(nodes_rows, columns=["Name", "X", "Y", "Z"])
 
-    # --- Frames (optional) ---
+    # --- Frames ---
     frame_names = _sap_get_name_list(model.FrameObj.GetNameList())
     elems_rows = []
     for fn in frame_names:
-        fname = str(fn)
+        fn = str(fn)
         try:
-            res = model.FrameObj.GetPoints(fname)
-            # Common: (ret, pi, pj)
-            if isinstance(res, tuple) and len(res) >= 3:
-                pi, pj = res[-2], res[-1]
-            elif isinstance(res, tuple) and len(res) == 2:
-                pi, pj = res
-            else:
-                continue
-            elems_rows.append([fname, str(pi), str(pj)])
+            res = model.FrameObj.GetPoints(fn)
         except Exception:
             continue
+
+        if isinstance(res, (tuple, list)) and len(res) >= 3:
+            pi, pj = res[-2], res[-1]
+        elif isinstance(res, (tuple, list)) and len(res) == 2:
+            pi, pj = res
+        else:
+            continue
+
+        elems_rows.append([fn, str(pi), str(pj)])
 
     elems_df = pd.DataFrame(elems_rows, columns=["Frame", "I", "J"])
 
@@ -1139,28 +1161,36 @@ def _extract_model_to_dfs(model):
     area_names = _sap_get_name_list(model.AreaObj.GetNameList())
     areas_rows = []
     for an in area_names:
-        area = str(an)
+        an = str(an)
         try:
-            res = model.AreaObj.GetPoints(area)
-            # Common: (ret, npts, names)
-            if isinstance(res, tuple) and len(res) >= 3:
-                npts, pts = int(res[-2]), res[-1]
-            elif isinstance(res, tuple) and len(res) == 2:
-                npts, pts = int(res[0]), res[1]
-            else:
-                continue
-
-            pts_list = list(pts) if pts is not None else []
-            pts_list = [str(p) for p in pts_list[:npts]]
-
-            # pad to 4
-            while len(pts_list) < 4:
-                pts_list.append("")
-
-            areas_rows.append([area] + pts_list[:4])
-
+            res = model.AreaObj.GetPoints(an)
         except Exception:
             continue
+
+        # Typical:
+        # (ret, num_pts, names) or (num_pts, names)
+        num_pts = None
+        names = None
+        if isinstance(res, (tuple, list)) and len(res) >= 3:
+            num_pts, names = res[-2], res[-1]
+        elif isinstance(res, (tuple, list)) and len(res) == 2:
+            num_pts, names = res
+        else:
+            continue
+
+        try:
+            npts = int(num_pts)
+        except Exception:
+            continue
+
+        pts = _as_seq(names, npts)
+        pts = [str(p) for p in pts[:npts]]
+
+        # pad to 4
+        while len(pts) < 4:
+            pts.append("")
+
+        areas_rows.append([an] + pts[:4])
 
     areas_df = pd.DataFrame(areas_rows, columns=["Area", "P1", "P2", "P3", "P4"])
 
