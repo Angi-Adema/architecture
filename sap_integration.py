@@ -64,6 +64,16 @@ def _sap_get_name_list(res):
     # --- already a list/tuple of names ---
     return [str(x) for x in r]
 
+def _filter_bad_sap_names(names):
+    bad = {"global", "", "none"}
+    out = []
+    for n in names:
+        s = str(n).strip()
+        if s.lower() in bad:
+            continue
+        out.append(s)
+    return out
+
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
 def _ensure_xlsxwriter():
@@ -944,7 +954,7 @@ def _settlement_mm_from_displacements(disp_df, node_list, vertical_axis="Z"):
 
 def _get_all_area_names(model):
     try:
-        return _sap_get_name_list(model.AreaObj.GetNameList())
+        return _filter_bad_sap_names(_sap_get_name_list(model.AreaObj.GetNameList()))
     except Exception:
         return []
 
@@ -1059,14 +1069,8 @@ def _infer_ne_from_filename(xlsx_path):
 
 def _iter_all_frames(model):
     """Yield (name, I, J, Section) for all frame objects."""
-    try:
-        ret, names = model.FrameObj.GetNameList()
-    except Exception:
-        return []
-    try:
-        names = list(names)
-    except Exception:
-        names = [names]
+
+    names = _filter_bad_sap_names(_sap_get_name_list(model.FrameObj.GetNameList()))
 
     for nm in names:
         i_pt = j_pt = None
@@ -1141,10 +1145,7 @@ def _extract_model_to_dfs(model):
         return None
 
     # --- Points ---
-    pt_names = _sap_get_name_list(model.PointObj.GetNameList())
-
-    pt_names = _sap_get_name_list(model.PointObj.GetNameList())
-    pt_names = [n for n in pt_names if str(n).strip() and str(n).lower() != "global"]
+    pt_names = _filter_bad_sap_names(_sap_get_name_list(model.PointObj.GetNameList()))
 
     nodes_rows = []
     for nm in pt_names:
@@ -1158,7 +1159,8 @@ def _extract_model_to_dfs(model):
     nodes_df = pd.DataFrame(nodes_rows, columns=["Name", "X", "Y", "Z"])
 
     # --- Frames ---
-    frame_names = _sap_get_name_list(model.FrameObj.GetNameList())
+    frame_names = _filter_bad_sap_names(_sap_get_name_list(model.FrameObj.GetNameList()))
+
     elems_rows = []
     for fn in frame_names:
         fn = str(fn)
@@ -1179,10 +1181,7 @@ def _extract_model_to_dfs(model):
     elems_df = pd.DataFrame(elems_rows, columns=["Frame", "I", "J"])
 
     # --- Areas ---
-    area_names = _sap_get_name_list(model.AreaObj.GetNameList())
-
-    # ✅ Safety filter: remove non-area tokens that sometimes appear
-    area_names = [n for n in area_names if str(n).strip() and str(n).lower() != "global"]
+    area_names = _filter_bad_sap_names(_sap_get_name_list(model.AreaObj.GetNameList()))
 
     areas_rows = []
     for an in area_names:
