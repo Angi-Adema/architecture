@@ -15,55 +15,54 @@ import pandas as pd
 import comtypes.client as cc
 import numpy as np
 
-def _sap_get_name_list(get_name_list_result):
+def _sap_get_name_list(res):
     """
-    Normalize SAP2000 COM GetNameList() results into a Python list[str].
+    Normalize SAP2000 GetNameList() return into a Python list[str].
 
-    Handles shapes like:
-      (count, names)
-      (ret, count, names)
-      (ret, names)
-    And also handles nested arrays like:
-      names = (('1','2','3',...),)  # <-- common comtypes nesting
+    Common shapes seen:
+      1) (ret, count, names)
+      2) (count, names, ret)   <-- YOUR SAP BUILD
+      3) (count, names)
+      4) names
     """
-    r = get_name_list_result
-    if r is None:
+    if res is None:
         return []
 
-    # If comtypes gives a non-tuple, just wrap reasonably
-    if not isinstance(r, tuple):
-        if isinstance(r, str):
-            return [r]
-        try:
-            return [str(x) for x in list(r)]
-        except Exception:
-            return [str(r)]
+    if not isinstance(res, (list, tuple)):
+        return []
 
-    names = None
+    # Convert to list for easier handling
+    r = list(res)
 
-    # Common SAP shapes
+    # --- 3-item shapes ---
     if len(r) == 3:
-        # (ret, count, names)
-        names = r[2]
-    elif len(r) == 2:
-        # could be (count, names) OR (ret, names)
-        # names is usually the second item
-        names = r[1]
-    elif len(r) >= 1:
-        names = r[-1]
+        a, b, c = r[0], r[1], r[2]
 
-    if names is None:
+        # YOUR BUILD: (count, names, ret)
+        if isinstance(a, (int, float)) and isinstance(b, (list, tuple)) and isinstance(c, (int, float)):
+            return [str(x) for x in b]
+
+        # Common: (ret, count, names)
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and isinstance(c, (list, tuple)):
+            return [str(x) for x in c]
+
+        # Fallback: return the “most list-like” item
+        for item in (a, b, c):
+            if isinstance(item, (list, tuple)):
+                return [str(x) for x in item]
         return []
 
-    # names sometimes comes back as a single string
-    if isinstance(names, str):
-        return [names]
+    # --- 2-item shapes: (count, names) ---
+    if len(r) == 2:
+        a, b = r[0], r[1]
+        if isinstance(a, (int, float)) and isinstance(b, (list, tuple)):
+            return [str(x) for x in b]
+        if isinstance(b, (int, float)) and isinstance(a, (list, tuple)):
+            return [str(x) for x in a]
+        return []
 
-    # names can be tuple/list/array
-    if isinstance(names, (list, tuple)) and len(names) == 1 and isinstance(names[0], (list, tuple)):
-        names = names[0]
-
-    return [str(x) for x in list(names)]
+    # --- already a list/tuple of names ---
+    return [str(x) for x in r]
 
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
