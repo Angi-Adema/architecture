@@ -956,6 +956,19 @@ def _get_all_area_names(model):
         return _filter_bad_sap_names(_sap_get_name_list(model.AreaObj.GetNameList()))
     except Exception:
         return []
+    
+def _get_all_point_names(model):
+    try:
+        return _filter_bad_sap_names(_sap_get_name_list(model.PointObj.GetNameList()))
+    except Exception:
+        return []
+
+
+def _get_all_frame_names(model):
+    try:
+        return _filter_bad_sap_names(_sap_get_name_list(model.FrameObj.GetNameList()))
+    except Exception:
+        return []
 
 
 def _get_joint_xyz(model, joint_name):
@@ -969,25 +982,11 @@ def _get_joint_xyz(model, joint_name):
 def _iter_all_point_coords(model):
     """
     Yield (name, x, y, z) for all joints in the model.
-    Handles both variants of GetNameList and GetCoordCartesian.
+    Handles SAP2000 COM return-shape weirdness.
     """
-    try:
-        out = model.PointObj.GetNameList()
-    except Exception:
+    names_seq = _filter_bad_sap_names(_sap_get_name_list(model.PointObj.GetNameList()))
+    if not names_seq:
         return
-
-    if isinstance(out, (list, tuple)) and len(out) == 3:
-        _, _, names = out
-    else:
-        try:
-            _, names = out
-        except Exception:
-            return
-
-    try:
-        names_seq = list(names)
-    except Exception:
-        names_seq = [names]
 
     for nm in names_seq:
         name_str = str(nm)
@@ -1144,7 +1143,7 @@ def _extract_model_to_dfs(model):
         return None
 
     # --- Points ---
-    pt_names = _filter_bad_sap_names(_sap_get_name_list(model.PointObj.GetNameList()))
+    pt_names = _get_all_point_names(model)
 
     nodes_rows = []
     for nm in pt_names:
@@ -1158,7 +1157,7 @@ def _extract_model_to_dfs(model):
     nodes_df = pd.DataFrame(nodes_rows, columns=["Name", "X", "Y", "Z"])
 
     # --- Frames ---
-    frame_names = _filter_bad_sap_names(_sap_get_name_list(model.FrameObj.GetNameList()))
+    frame_names = _get_all_frame_names(model)
 
     elems_rows = []
     for fn in frame_names:
@@ -1180,7 +1179,7 @@ def _extract_model_to_dfs(model):
     elems_df = pd.DataFrame(elems_rows, columns=["Frame", "I", "J"])
 
     # --- Areas ---
-    area_names = _filter_bad_sap_names(_sap_get_name_list(model.AreaObj.GetNameList()))
+    area_names = _get_all_area_names(model)
 
     areas_rows = []
     for an in area_names:
