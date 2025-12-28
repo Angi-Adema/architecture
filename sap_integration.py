@@ -19,39 +19,58 @@ def _sap_get_name_list(get_name_list_result):
     """
     Normalize SAP2000 COM GetNameList() results into a Python list[str].
 
-    Possible returns:
-      (count:int, names:tuple/list)
-      (ret:int, count:int, names:tuple/list)
-      Sometimes `names` can be a single string.
+    Handles shapes like:
+      (count, names)
+      (ret, count, names)
+      (ret, names)
+    And also handles nested arrays like:
+      names = (('1','2','3',...),)  # <-- common comtypes nesting
     """
     r = get_name_list_result
-
     if r is None:
         return []
 
-    # If comtypes gives a non-tuple, just wrap
+    # If comtypes gives a non-tuple, just wrap reasonably
     if not isinstance(r, tuple):
         if isinstance(r, str):
             return [r]
-        return list(r)
+        try:
+            return [str(x) for x in list(r)]
+        except Exception:
+            return [str(r)]
 
-    # Common shapes
-    if len(r) == 2:
-        count, names = r
-    elif len(r) == 3:
-        _ret, count, names = r
-    else:
-        # last item usually the names
+    names = None
+
+    # Common SAP shapes
+    if len(r) == 3:
+        # (ret, count, names)
+        names = r[2]
+    elif len(r) == 2:
+        # could be (count, names) OR (ret, names)
+        # names is usually the second item
+        names = r[1]
+    elif len(r) >= 1:
         names = r[-1]
 
     if names is None:
         return []
 
+    # names sometimes comes back as a single string
     if isinstance(names, str):
         return [names]
 
     # names can be tuple/list/array
-    return [str(x) for x in list(names)]
+    try:
+        seq = list(names)
+    except Exception:
+        return [str(names)]
+
+    # 🔥 Key fix: flatten one level if comtypes nested it
+    if len(seq) == 1 and isinstance(seq[0], (list, tuple)):
+        seq = list(seq[0])
+
+    return [str(x) for x in seq]
+
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
 def _ensure_xlsxwriter():
@@ -1097,27 +1116,23 @@ def _extract_model_to_dfs(model):
     Handles SAP2000 COM return-shape weirdness across versions.
     """
     def _coord(nm: str):
-        # SAP often returns one of:
-        # (ret, x, y, z)  OR  (x, y, z)  OR  (ret, x, y, z, csys) etc.
         for args in [(nm, "Global"), (nm,)]:
             try:
                 res = model.PointObj.GetCoordCartesian(*args)
             except Exception:
-                continue
+                continue  
 
             if not isinstance(res, (tuple, list)):
                 continue
 
-            # pull out numeric values in order
             nums = []
             for v in res:
                 try:
-                    fv = float(v)
-                    nums.append(fv)
+                    nums.append(float(v))
                 except Exception:
                     pass
-
-            # If we found at least 3 floats, assume first 3 are x,y,z
+            if len(nums) >= 4 and nums[0] in (0.0, 1.0):
+                return nums[1], nums[2], nums[3]
             if len(nums) >= 3:
                 return nums[0], nums[1], nums[2]
 
@@ -1125,14 +1140,15 @@ def _extract_model_to_dfs(model):
 
     # --- Points ---
     pt_names = _sap_get_name_list(model.PointObj.GetNameList())
+
     nodes_rows = []
     for nm in pt_names:
-        nm = str(nm)
-        xyz = _coord(nm)
+        name = str(nm)
+        xyz = _coord(name)
         if xyz is None:
             continue
         x, y, z = xyz
-        nodes_rows.append([nm, x, y, z])
+        nodes_rows.append([name, x, y, z])
 
     nodes_df = pd.DataFrame(nodes_rows, columns=["Name", "X", "Y", "Z"])
 
@@ -1160,40 +1176,52 @@ def _extract_model_to_dfs(model):
     # --- Areas ---
     area_names = _sap_get_name_list(model.AreaObj.GetNameList())
     areas_rows = []
+
     for an in area_names:
         an = str(an)
+
         try:
             res = model.AreaObj.GetPoints(an)
         except Exception:
             continue
 
-        # Typical:
-        # (ret, num_pts, names) or (num_pts, names)
-        num_pts = None
-        names = None
-        if isinstance(res, (tuple, list)) and len(res) >= 3:
-            num_pts, names = res[-2], res[-1]
-        elif isinstance(res, (tuple, list)) and len(res) == 2:
-            num_pts, names = res
+        if not isinstance(res, (list, tuple)):
+            continue
+
+        # common shapes:
+        # (npts, pts) OR (ret, npts, pts)
+        if len(res) == 2:
+            npts, pts = res[0], res[1]
+        elif len(res) >= 3:
+            # often (ret, npts, pts) but sometimes other variants
+            npts, pts = res[-2], res[-1]
         else:
             continue
 
         try:
-            npts = int(num_pts)
+            pts_list = list(pts) if pts is not None else []
         except Exception:
-            continue
+            pts_list = [pts] if pts is not None else []
 
-        pts = _as_seq(names, npts)
-        pts = [str(p) for p in pts[:npts]]
+        # Flatten one level if nested like (('1','2','3','4'),)
+        if len(pts_list) == 1 and isinstance(pts_list[0], (list, tuple)):
+            pts_list = list(pts_list[0])
 
-        # pad to 4
-        while len(pts) < 4:
-            pts.append("")
+        # 🔹 NEW: trim to reported number of points
+        try:
+            n = int(float(npts))
+            pts_list = pts_list[:n]
+        except Exception:
+            pass
 
-        areas_rows.append([an] + pts[:4])
+        # pad to 4 (SAP shells expect up to 4)
+        while len(pts_list) < 4:
+            pts_list.append("")
 
+        areas_rows.append([an] + [str(p) for p in pts_list[:4]])
+    
     areas_df = pd.DataFrame(areas_rows, columns=["Area", "P1", "P2", "P3", "P4"])
-
+    
     return nodes_df, elems_df, areas_df
 
 
