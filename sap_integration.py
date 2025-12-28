@@ -1143,6 +1143,9 @@ def _extract_model_to_dfs(model):
     # --- Points ---
     pt_names = _sap_get_name_list(model.PointObj.GetNameList())
 
+    pt_names = _sap_get_name_list(model.PointObj.GetNameList())
+    pt_names = [n for n in pt_names if str(n).strip() and str(n).lower() != "global"]
+
     nodes_rows = []
     for nm in pt_names:
         name = str(nm)
@@ -1177,8 +1180,11 @@ def _extract_model_to_dfs(model):
 
     # --- Areas ---
     area_names = _sap_get_name_list(model.AreaObj.GetNameList())
-    areas_rows = []
 
+    # ✅ Safety filter: remove non-area tokens that sometimes appear
+    area_names = [n for n in area_names if str(n).strip() and str(n).lower() != "global"]
+
+    areas_rows = []
     for an in area_names:
         an = str(an)
 
