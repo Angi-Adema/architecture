@@ -66,13 +66,12 @@ def _sap_get_name_list(res):
 def _filter_bad_sap_names(names):
     bad = {"global", "", "none"}
     out = []
-    for n in names:
+    for n in names or []:
         s = str(n).strip()
         if s.lower() in bad:
             continue
         out.append(s)
     return out
-
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
 def _ensure_xlsxwriter():
@@ -1644,8 +1643,18 @@ def _assign_depth_based_overburden_to_all_areas(
             assigned_joints += 1
 
     # 5) Assign surface pressure "By Joint Pattern" to all areas with multiplier = gamma
-    area_names = _get_all_area_names(model)
+    try:
+        raw = _sap_get_name_list(model.AreaObj.GetNameList())
+    except Exception:
+        raw = []
+
+    area_names = _filter_bad_sap_names(raw)
+
+    _log("[DEBUG] Overburden applying to first areas:", area_names[:5], "count=", len(area_names))
+
     assigned_areas = 0
+    failed_areas = 0
+
     for an in area_names:
         ok = _assign_area_surface_pressure_by_joint_pattern(
             model,
@@ -1658,73 +1667,24 @@ def _assign_depth_based_overburden_to_all_areas(
         )
         if ok:
             assigned_areas += 1
+        else:
+            failed_areas += 1
+
+    _log(f"[DEBUG] Overburden assigned_areas={assigned_areas} failed_areas={failed_areas}")
 
     return {
-        "assigned_areas": assigned_areas,
-        "assigned_joints": assigned_joints,
+        "assigned_areas": int(assigned_areas),
+        "assigned_joints": int(assigned_joints),
         "gamma_Npm3": float(gamma_soil_Npm3),
         "burial_depth_vertex_m": float(burial_depth_vertex_m),
         "z_vertex": float(z_vertex),
         "z_grade": float(z_grade),
         "pattern": load_pattern,
         "case": case_name,
-        "joint_pattern": joint_pattern_name
+        "joint_pattern": joint_pattern_name,
+        "failed_areas": int(failed_areas),
     }
 
-# def _assign_constant_overburden_to_base_areas(
-#     model,
-#     nodes_df,
-#     areas_df,
-#     pressure_Npm2=OVERBURDEN_PRESSURE_NPM2,
-#     load_pattern=SOIL_LOAD_PATTERN,
-#     case_name=SOIL_CASE_NAME,
-#     vertical_axis="Z"
-# ):
-#     """
-#     Assign a constant surface pressure to areas that lie on the base (min Z).
-#     Pressure is in N/m^2 (Pa) for N-m units.
-
-#     NOTE on sign:
-#       - If you want downward pressure, use +pressure
-#       - If you want upward (soil reaction), use -pressure
-#     """
-#     if areas_df is None or areas_df.empty:
-#         return {"assigned_areas": 0}
-
-#     try:
-#         model.LoadPatterns.Add(load_pattern, 1, 0.0)
-#     except Exception:
-#         pass
-
-#     try:
-#         model.LoadCases.StaticLinear.SetCase(case_name)
-#         model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
-#     except Exception:
-#         pass
-
-#     zmin = float(nodes_df["Z"].min())
-#     node_z = dict(zip(nodes_df["Name"].astype(str), nodes_df["Z"].astype(float)))
-
-#     assigned = 0
-#     for _, r in areas_df.iterrows():
-#         an = str(r["Area"])
-#         pts = [r.get("P1"), r.get("P2"), r.get("P3"), r.get("P4")]
-#         pts = [str(p) for p in pts if p is not None and str(p).strip() != ""]
-#         if len(pts) < 3:
-#             continue
-        
-#         TOL_Z = 1e-3
-#         if all(abs(node_z.get(p, 1e9) - zmin) <= TOL_Z for p in pts):
-#             try:
-#                 model.AreaObj.SetLoadSurfacePressure(
-#                     an, load_pattern, "Projected",
-#                     float(pressure_Npm2), "Global", True
-#                 )
-#                 assigned += 1
-#             except Exception:
-#                 pass
-
-#     return {"assigned_areas": assigned, "pressure": pressure_Npm2, "pattern": load_pattern, "case": case_name}
 
 def _ensure_case_runs_in_analysis(model, case_name):
     """
