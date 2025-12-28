@@ -60,16 +60,10 @@ def _sap_get_name_list(get_name_list_result):
         return [names]
 
     # names can be tuple/list/array
-    try:
-        seq = list(names)
-    except Exception:
-        return [str(names)]
+    if isinstance(names, (list, tuple)) and len(names) == 1 and isinstance(names[0], (list, tuple)):
+        names = names[0]
 
-    # 🔥 Key fix: flatten one level if comtypes nested it
-    if len(seq) == 1 and isinstance(seq[0], (list, tuple)):
-        seq = list(seq[0])
-
-    return [str(x) for x in seq]
+    return [str(x) for x in list(names)]
 
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
@@ -1115,6 +1109,15 @@ def _extract_model_to_dfs(model):
     Robustly extract the *actual* SAP model into DataFrames.
     Handles SAP2000 COM return-shape weirdness across versions.
     """
+
+    # 🔍 TEMP DEBUG — inspect raw COM return shapes (remove after one run)
+    try:
+        _log("RAW PointObj.GetNameList:", repr(model.PointObj.GetNameList()))
+        _log("RAW AreaObj.GetNameList:", repr(model.AreaObj.GetNameList()))
+        _log("RAW FrameObj.GetNameList:", repr(model.FrameObj.GetNameList()))
+    except Exception as e:
+        _log("RAW NameList debug failed:", e)
+
     def _coord(nm: str):
         for args in [(nm, "Global"), (nm,)]:
             try:
@@ -1221,7 +1224,7 @@ def _extract_model_to_dfs(model):
         areas_rows.append([an] + [str(p) for p in pts_list[:4]])
     
     areas_df = pd.DataFrame(areas_rows, columns=["Area", "P1", "P2", "P3", "P4"])
-    
+
     return nodes_df, elems_df, areas_df
 
 
