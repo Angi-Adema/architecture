@@ -715,6 +715,33 @@ def _run_analysis(model):
         _log(f"RunAnalysis raised: {e}")
         raise
 
+def _case_has_any_joint_displ_output(model, case_name):
+    """
+    Returns True if the given case produced at least 1 joint displacement result.
+    We try a single joint (first available) to keep it fast.
+    """
+    try:
+        pts = _get_all_point_names(model)
+        if not pts:
+            return False
+
+        test_joint = str(pts[0])
+
+        # Prefer: select case, then call without passing case_name (more compatible)
+        _select_case(model, case_name)
+
+        try:
+            out = model.Results.JointDispl(test_joint, 0)
+        except Exception:
+            out = model.Results.JointDispl(test_joint, 0, case_name)
+
+        # Typical tuple: ret, nres, ...
+        if isinstance(out, (list, tuple)) and len(out) >= 2:
+            nres = int(out[1] or 0)
+            return nres > 0
+        return False
+    except Exception:
+        return False
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
     rows = []
@@ -1068,7 +1095,7 @@ def _infer_ne_from_filename(xlsx_path):
 def _iter_all_frames(model):
     """Yield (name, I, J, Section) for all frame objects."""
 
-    names = _filter_bad_sap_names(_sap_get_name_list(model.FrameObj.GetNameList()))
+    names = _get_all_frame_names(model)
 
     for nm in names:
         i_pt = j_pt = None
@@ -1765,9 +1792,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     try:
         areas_in = _read_areas_sheet(input_xlsx)
-
         _log("[DEBUG] areas_in rows:", 0 if areas_in is None else len(areas_in))
-
         if areas_in is not None and areas_in.empty:
             areas_in = None
     except Exception:
@@ -1777,6 +1802,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     sap, model = _start_sap2000_v20(visible=visible)
     try:
+        # ---- material + build ----
         selected_material = _ensure_material_defined(model, material) if material else None
         default_mat = selected_material or "CONC40"
 
@@ -1803,26 +1829,24 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             except Exception:
                 _set_area_axes_by_two_joints(model, joint1="1", joint2="23", plane="31", replace=True)
 
-        # Extract the actual built model
+        # Extract the actual built model (what SAP really has)
         nodes, elems, areas = _extract_model_to_dfs(model)
 
-        # DEBUG: confirm what actually exists.
         _log("[DEBUG] Extracted:", f"nodes={len(nodes)} elems={len(elems)} areas_df={0 if areas is None else len(areas)}")
         _log("[DEBUG] SAP area objects:", len(_get_all_area_names(model)))
 
-        # Supports + Dead load
+        # ---- supports / restraints ----
         if soil:
-            # Base restraints for soil-spring model:
             # Fix UX, UY; leave UZ free so the vertical spring can act
             _fix_base_nodes(model, nodes, fix=(1, 1, 0, 1, 1, 1))
         else:
             # No-soil model: fully fixed base
             _fix_base_nodes(model, nodes)
 
+        # ---- load patterns ----
         _add_default_self_weight(model, "Dead", 1.0)
 
-        
-        # Soil actions: stiffness-based support + constant overburden
+        # ---- Soil actions: stiffness-based support + depth-based overburden ----
         soil_meta = None
         if soil:
             try:
@@ -1847,9 +1871,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     replace=True
                 )
 
-                # Force SOIL_CASE into the analysis run set (prevents "loads exist but case never ran")
-                _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
-
                 soil_meta = {"springs": springs_meta, "overburden": overburden_meta}
 
                 _log("[Soil] " + json.dumps(
@@ -1859,21 +1880,46 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             except Exception as e:
                 _log("[Soil] Skipped:", e)
 
-        # Save model beside spreadsheet
+        # ---- Save model beside spreadsheet ----
         base, _ext = os.path.splitext(input_xlsx)
         sdb_path = base + ".sdb"
         try:
             model.File.Save(sdb_path)
         except Exception:
             pass
-        
-        # Force cases into run set
+
+        # ============================================================
+        # ✅ CORRECT ANALYSIS BLOCK (the part you were editing)
+        # - Clear prior results (optional but helpful)
+        # - Force cases into analysis run set
+        # - Run analysis once
+        # - Verify SOIL_CASE produced output
+        # ============================================================
+
+        # Clear old results
+        try:
+            model.Analyze.DeleteResults("Dead")
+        except Exception:
+            pass
+
+        if soil:
+            try:
+                model.Analyze.DeleteResults(SOIL_CASE_NAME)
+            except Exception:
+                pass
+
+        # Force run flags
         _ensure_case_runs_in_analysis(model, "Dead")
         if soil:
             _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
-    
-        # Run analysis once (Dead + any soil case that exists)
+
+        # Run analysis (Dead + Soil case if defined)
         _run_analysis(model)
+
+        # Post-run verification (did SOIL_CASE actually generate results?)
+        if soil:
+            ok = _case_has_any_joint_displ_output(model, SOIL_CASE_NAME)
+            _log(f"[DEBUG] SOIL_CASE produced output? {ok}")
 
         # Default: output "Dead"
         try:
@@ -1907,7 +1953,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             except Exception as e:
                 _log("[SoilSweep] Skipped:", e)
 
-        # Collect results
+        # ---- Collect results ----
         node_names = nodes["Name"].astype(str).tolist()
         frame_names = elems["Frame"].astype(str).tolist() if ("Frame" in elems.columns and len(elems) > 0) else []
 
@@ -1939,15 +1985,12 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             if soil:
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
 
-        
-
-        # Write results workbook
+        # ---- Write results workbook ----
         results_xlsx = base + "_results.xlsx"
         _ensure_xlsxwriter()
 
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
-
-# ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
+            # ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
             summary_rows = []
             summary_rows += _extrema_summary(shell_dead_df, "Dead")
             if soil:
@@ -2033,11 +2076,11 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 depths = soil_results["depths"]
                 normalize = soil.get("normalize", False)
                 gamma_val = soil.get("gamma", 18000.0)
-                summary_rows = []
+                summary_rows2 = []
                 for d in depths:
                     mult = (gamma_val * d) if normalize else gamma_val
-                    summary_rows.append({"Depth_m": d, "Multiplier": mult})
-                pd.DataFrame(summary_rows).to_excel(xlw, sheet_name="SoilSummary", index=False)
+                    summary_rows2.append({"Depth_m": d, "Multiplier": mult})
+                pd.DataFrame(summary_rows2).to_excel(xlw, sheet_name="SoilSummary", index=False)
 
                 for depth_val, ddf in zip(soil_results["depths"], soil_results["displacements_by_step"]):
                     if ddf.empty:
