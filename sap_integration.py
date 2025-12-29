@@ -73,6 +73,29 @@ def _filter_bad_sap_names(names):
         out.append(s)
     return out
 
+def _assign_area_surface_pressure_by_uniform(model, area_name, load_pattern, pressure_Npm2, coord_sys="Global", replace=True):
+    area = model.AreaObj
+
+    # Try surface pressure (common signature)
+    try:
+        ret = area.SetLoadSurfacePressure(
+            area_name, load_pattern, "Projected",
+            float(pressure_Npm2), coord_sys, bool(replace)
+        )
+        _log("[DEBUG] SetLoadSurfacePressure ret=", ret, "area=", area_name, "p=", pressure_Npm2)
+        return ret == 0
+    except Exception as e:
+        _log("[DEBUG] SetLoadSurfacePressure EXCEPTION area=", area_name, "err=", repr(e))
+
+    # Fallback: uniform area load
+    try:
+        ret = area.SetLoadUniform(area_name, load_pattern, float(pressure_Npm2), coord_sys, bool(replace))
+        _log("[DEBUG] SetLoadUniform ret=", ret, "area=", area_name, "p=", pressure_Npm2)
+        return ret == 0
+    except Exception as e:
+        _log("[DEBUG] SetLoadUniform EXCEPTION area=", area_name, "err=", repr(e))
+        return False
+
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
 def _ensure_xlsxwriter():
     try:
@@ -1699,22 +1722,14 @@ def _assign_depth_based_overburden_to_all_areas(
         depth_m = max(0.0, z_grade - elev_avg)
         pressure_Npm2 = float(gamma_soil_Npm3) * float(depth_m)
 
-        # Assign uniform surface pressure (try the common SAP signatures)
-        ok = False
-        try:
-            # Many SAP versions: (Name, LoadPat, Value, Replace, CSys)
-            ret = model.AreaObj.SetLoadSurfacePressure(an, load_pattern, pressure_Npm2, bool(replace), "Global")
-            ok = (ret == 0)
-        except Exception:
-            ok = False
-
-        if not ok:
-            try:
-                # Some versions include direction/type args; try a fallback:
-                ret = model.AreaObj.SetLoadUniform(an, load_pattern, pressure_Npm2, 2, bool(replace), "Global")
-                ok = (ret == 0)
-            except Exception:
-                ok = False
+        ok = _assign_area_surface_pressure_by_uniform(
+            model,
+            area_name=an,
+            load_pattern=load_pattern,
+            pressure_Npm2=pressure_Npm2,
+            coord_sys="Global",
+            replace=bool(replace)
+        )
 
         if ok:
             assigned_areas += 1
@@ -1878,7 +1893,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     vertical_axis=soil.get("axis", "Z"),
                     load_pattern=SOIL_LOAD_PATTERN,
                     case_name=SOIL_CASE_NAME,
-                    joint_pattern_name="SOIL_DEPTH",
                     replace=True
                 )
 
