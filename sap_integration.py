@@ -1173,22 +1173,26 @@ def _extract_model_to_dfs(model):
             try:
                 res = model.PointObj.GetCoordCartesian(*args)
             except Exception:
-                continue  
+                continue
 
             if not isinstance(res, (tuple, list)):
                 continue
 
-            nums = []
-            for v in res:
+            # common: (ret, x, y, z)
+            if len(res) >= 4:
                 try:
-                    nums.append(float(v))
+                    ret = int(res[0])
+                    if ret == 0:
+                        return float(res[1]), float(res[2]), float(res[3])
                 except Exception:
                     pass
-            if len(nums) >= 4 and nums[0] in (0.0, 1.0):
-                return nums[1], nums[2], nums[3]
-            if len(nums) >= 3:
-                return nums[0], nums[1], nums[2]
 
+            # fallback: (x, y, z)
+            if len(res) >= 3:
+                try:
+                    return float(res[0]), float(res[1]), float(res[2])
+                except Exception:
+                    pass
         return None
 
     # --- Points ---
@@ -1267,6 +1271,8 @@ def _extract_model_to_dfs(model):
             pts_list = pts_list[:n]
         except Exception:
             pass
+
+        pts_list = [p for p in pts_list if str(p).strip().lower() not in ("", "none", "nan")]
 
         # pad to 4 (SAP shells expect up to 4)
         while len(pts_list) < 4:
@@ -1685,12 +1691,7 @@ def _assign_depth_based_overburden_to_all_areas(
     for name, x, y, z in joints:
         elev_by_point[str(name)] = float((x, y, z)[axis_index])
 
-    # 3) Get valid area names (filters out "Global")
-    try:
-        raw = _sap_get_name_list(model.AreaObj.GetNameList())
-    except Exception:
-        raw = []
-    area_names = _filter_bad_sap_names(raw)
+    area_names = _get_all_area_names(model)
 
     _log("[DEBUG] Overburden applying to first areas:", area_names[:5], "count=", len(area_names))
 
@@ -1701,17 +1702,62 @@ def _assign_depth_based_overburden_to_all_areas(
     for an in area_names:
         an = str(an)
 
-        # Get area corner points
         try:
-            ret, npts, pt_names = model.AreaObj.GetPoints(an)
-            if ret != 0 or not pt_names:
-                failed_areas += 1
-                continue
+            res = model.AreaObj.GetPoints(an)
         except Exception:
             failed_areas += 1
             continue
 
-        pt_names = [str(p) for p in pt_names]
+        # normalize common shapes: (ret,npts,pts) OR (npts,pts,ret) OR (npts,pts)
+        ret = 0
+        npts = None
+        pt_names = None
+
+        if isinstance(res, (list, tuple)):
+            if len(res) == 3:
+                a, b, c = res
+                # common: (ret, npts, pts)
+                if isinstance(a, (int, float)) and isinstance(b, (int, float)) and isinstance(c, (list, tuple)):
+                    ret, npts, pt_names = int(a), int(b), list(c)
+                # your build often: (npts, pts, ret)
+                elif isinstance(a, (int, float)) and isinstance(b, (list, tuple)) and isinstance(c, (int, float)):
+                    npts, pt_names, ret = int(a), list(b), int(c)
+                else:
+                    # fallback: last list-like is points; first numeric is npts
+                    pt_names = next((x for x in res if isinstance(x, (list, tuple))), None)
+                    npts = next((x for x in res if isinstance(x, (int, float))), None)
+                    ret = 0
+            elif len(res) == 2:
+                a, b = res
+                if isinstance(a, (int, float)) and isinstance(b, (list, tuple)):
+                    npts, pt_names = int(a), list(b)
+                    ret = 0
+                else:
+                    failed_areas += 1
+                    continue
+            else:
+                failed_areas += 1
+                continue
+        else:
+            failed_areas += 1
+            continue
+
+        if ret != 0 or not pt_names:
+            failed_areas += 1
+            continue
+
+        # trim to npts (if we have it)
+        if npts is not None:
+            try:
+                n = int(npts)
+                if n > 0:
+                    pt_names = list(pt_names)[:n]
+            except Exception:
+                pass
+
+        # normalize + remove blanks
+        pt_names = [str(p).strip() for p in pt_names if str(p).strip().lower() not in ("", "none", "nan")]
+
         elevs = [elev_by_point.get(p) for p in pt_names]
         elevs = [e for e in elevs if e is not None]
         if not elevs:
