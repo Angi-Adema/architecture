@@ -1298,26 +1298,55 @@ def _assign_area_surface_pressure_by_joint_pattern(
 ):
     """
     Assign Area Loads -> Surface Pressure -> By Joint Pattern.
-    Tries SetLoadSurfacePressure first, then SetLoadUniformToPattern as fallback.
+    Returns True only if SAP returns ret == 0.
     """
     area = model.AreaObj
+
+    # --- Attempt 1: Surface Pressure by Joint Pattern ---
     try:
-        area.SetLoadSurfacePressure(area_name, load_pattern, "Projected",
-                                    float(multiplier), coord_sys, bool(replace),
-                                    True, joint_pattern)
-        return True
-    except Exception:
-        pass
+        ret = area.SetLoadSurfacePressure(
+            area_name,
+            load_pattern,
+            "Projected",
+            float(multiplier),
+            coord_sys,
+            bool(replace),
+            True,
+            joint_pattern
+        )
+        _log("[DEBUG] pressure assign ret=", ret, "area=", area_name, "p=", multiplier)
+        return ret == 0
+    except Exception as e:
+        _log("[DEBUG] SetLoadSurfacePressure EXCEPTION area=", area_name, e)
+
+    # --- Attempt 2: Uniform to Joint Pattern ---
     try:
-        area.SetLoadUniformToPattern(area_name, load_pattern, joint_pattern,
-                                     coord_sys, float(multiplier), bool(replace))
-        return True
-    except Exception:
-        pass
+        ret = area.SetLoadUniformToPattern(
+            area_name,
+            load_pattern,
+            joint_pattern,
+            coord_sys,
+            float(multiplier),
+            bool(replace)
+        )
+        _log("[DEBUG] uniform-to-pattern ret=", ret, "area=", area_name, "p=", multiplier)
+        return ret == 0
+    except Exception as e:
+        _log("[DEBUG] SetLoadUniformToPattern EXCEPTION area=", area_name, e)
+
+    # --- Attempt 3: Plain uniform load (last-resort) ---
     try:
-        area.SetLoadUniform(area_name, load_pattern, float(multiplier), coord_sys, bool(replace))
-        return False
-    except Exception:
+        ret = area.SetLoadUniform(
+            area_name,
+            load_pattern,
+            float(multiplier),
+            coord_sys,
+            bool(replace)
+        )
+        _log("[DEBUG] uniform ret=", ret, "area=", area_name, "p=", multiplier)
+        return ret == 0
+    except Exception as e:
+        _log("[DEBUG] SetLoadUniform EXCEPTION area=", area_name, e)
         return False
 
 
@@ -1604,7 +1633,6 @@ def _assign_depth_based_overburden_to_all_areas(
     vertical_axis="Z",
     load_pattern=SOIL_LOAD_PATTERN,
     case_name=SOIL_CASE_NAME,
-    joint_pattern_name="SOIL_DEPTH",
     replace=True,
 ):
     # 1) Ensure load pattern + case exist
@@ -1618,7 +1646,7 @@ def _assign_depth_based_overburden_to_all_areas(
     except Exception:
         pass
 
-    # 2) Get joints
+    # 2) Collect all joints + figure out "vertex" elevation
     joints = list(_iter_all_point_coords(model))
     if not joints:
         return {"assigned_areas": 0, "assigned_joints": 0}
@@ -1626,45 +1654,68 @@ def _assign_depth_based_overburden_to_all_areas(
     ax = (vertical_axis or "Z").upper()
     axis_index = 2 if ax == "Z" else (1 if ax == "Y" else 0)
 
-    # 3) Identify vertex elevation as the MAX along vertical axis (vertex should be "up" after flip)
     z_vertex = max((x, y, z)[axis_index] for _, x, y, z in joints)
-
-    # grade elevation in model coords
     z_grade = z_vertex + float(burial_depth_vertex_m)
 
-    # 4) Ensure joint pattern exists, then set joint pattern values = depth (m)
-    _ensure_joint_pattern_exists(model, joint_pattern_name)
+    # Quick lookup: point -> elevation
+    elev_by_point = {}
+    for name, x, y, z in joints:
+        elev_by_point[str(name)] = float((x, y, z)[axis_index])
 
-    assigned_joints = 0
-    for joint_name, x, y, z in joints:
-        elev = (x, y, z)[axis_index]
-        depth_m = max(0.0, z_grade - elev)
-        if _set_joint_pattern_value_for_point(model, joint_name, joint_pattern_name, depth_m):
-            assigned_joints += 1
-
-    # 5) Assign surface pressure "By Joint Pattern" to all areas with multiplier = gamma
+    # 3) Get valid area names (filters out "Global")
     try:
         raw = _sap_get_name_list(model.AreaObj.GetNameList())
     except Exception:
         raw = []
-
     area_names = _filter_bad_sap_names(raw)
 
     _log("[DEBUG] Overburden applying to first areas:", area_names[:5], "count=", len(area_names))
 
+    # 4) For each area, compute avg depth and assign uniform pressure = gamma * depth
     assigned_areas = 0
     failed_areas = 0
 
     for an in area_names:
-        ok = _assign_area_surface_pressure_by_joint_pattern(
-            model,
-            area_name=str(an),
-            load_pattern=load_pattern,
-            joint_pattern=joint_pattern_name,
-            multiplier=float(gamma_soil_Npm3),
-            coord_sys="Global",
-            replace=bool(replace)
-        )
+        an = str(an)
+
+        # Get area corner points
+        try:
+            ret, npts, pt_names = model.AreaObj.GetPoints(an)
+            if ret != 0 or not pt_names:
+                failed_areas += 1
+                continue
+        except Exception:
+            failed_areas += 1
+            continue
+
+        pt_names = [str(p) for p in pt_names]
+        elevs = [elev_by_point.get(p) for p in pt_names]
+        elevs = [e for e in elevs if e is not None]
+        if not elevs:
+            failed_areas += 1
+            continue
+
+        elev_avg = sum(elevs) / len(elevs)
+        depth_m = max(0.0, z_grade - elev_avg)
+        pressure_Npm2 = float(gamma_soil_Npm3) * float(depth_m)
+
+        # Assign uniform surface pressure (try the common SAP signatures)
+        ok = False
+        try:
+            # Many SAP versions: (Name, LoadPat, Value, Replace, CSys)
+            ret = model.AreaObj.SetLoadSurfacePressure(an, load_pattern, pressure_Npm2, bool(replace), "Global")
+            ok = (ret == 0)
+        except Exception:
+            ok = False
+
+        if not ok:
+            try:
+                # Some versions include direction/type args; try a fallback:
+                ret = model.AreaObj.SetLoadUniform(an, load_pattern, pressure_Npm2, 2, bool(replace), "Global")
+                ok = (ret == 0)
+            except Exception:
+                ok = False
+
         if ok:
             assigned_areas += 1
         else:
@@ -1674,15 +1725,15 @@ def _assign_depth_based_overburden_to_all_areas(
 
     return {
         "assigned_areas": int(assigned_areas),
-        "assigned_joints": int(assigned_joints),
+        "failed_areas": int(failed_areas),
         "gamma_Npm3": float(gamma_soil_Npm3),
         "burial_depth_vertex_m": float(burial_depth_vertex_m),
         "z_vertex": float(z_vertex),
         "z_grade": float(z_grade),
         "pattern": load_pattern,
         "case": case_name,
-        "joint_pattern": joint_pattern_name,
-        "failed_areas": int(failed_areas),
+        "joint_pattern": None,   # not used in this version
+        "assigned_joints": 0     # not used in this version
     }
 
 
