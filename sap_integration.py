@@ -200,6 +200,14 @@ def _log(*a, sep=" ", end="\n"):
 # --- Limit spammy per-area load errors ---
 _FAIL_COUNT = 0
 
+def _reset_load_logs():
+    """
+    Clear signature counters so new runs start fresh.
+    """
+    _LOAD_FAIL.clear()
+    _LOAD_FAIL_SAMPLES.clear()
+    _LOAD_OK.clear()
+
 def _reset_fail_counter():
     global _FAIL_COUNT
     _FAIL_COUNT = 0
@@ -1894,7 +1902,8 @@ def _assign_depth_based_overburden_to_all_areas(
     case_name=SOIL_CASE_NAME,
     replace=True,
 ):
-    # 1) Ensure load pattern + case exist
+    # 1) Start fresh logs
+    _reset_load_logs()
 
     # Confirm load pattern creation (log ret)
     try:
