@@ -890,34 +890,35 @@ def _sap_results_nres(res):
 def _case_has_any_joint_displ_output(model, case_name):
     """
     Returns True if the given case produced at least 1 joint displacement result.
-    Uses robust tuple parsing because SAP COM return shapes vary by build.
+    We try a joint that is likely NOT restrained (highest-elevation joint).
     """
     try:
-        pts = _get_all_point_names(model)
-        if not pts:
+        joints = list(_iter_all_point_coords(model))
+        if not joints:
+            _log("[DEBUG] JointDispl check: no joints found")
             return False
 
-        test_joint = str(pts[0])
+        # pick highest joint along Z (or whatever vertical axis you are using elsewhere)
+        # here we'll assume Z for check; it's just a verification probe
+        test_joint = max(joints, key=lambda t: t[3])[0]  # (name,x,y,z) -> pick max z
 
-        # Select case for output (helps some builds)
         _select_case(model, case_name)
 
-        # Always try the explicit case argument first
-        out = None
         try:
-            out = model.Results.JointDispl(test_joint, 0, case_name)
+            out = model.Results.JointDispl(str(test_joint), 0)
         except Exception:
-            # Some builds rely on selection and don't take case name
-            out = model.Results.JointDispl(test_joint, 0)
+            out = model.Results.JointDispl(str(test_joint), 0, case_name)
 
-        nres = _sap_results_nres(out)
+        if isinstance(out, (list, tuple)) and len(out) >= 2:
+            nres = int(out[1] or 0)
+            _log(f"[DEBUG] JointDispl check: case={case_name} joint={test_joint} nres={nres}")
+            return nres > 0
 
-        # Log one line so you can see what's happening without spam
-        _log(f"[DEBUG] JointDispl check: case={case_name} joint={test_joint} nres={nres}")
+        _log(f"[DEBUG] JointDispl check: case={case_name} joint={test_joint} returned unexpected shape")
+        return False
 
-        return nres > 0
     except Exception as e:
-        _log(f"[DEBUG] JointDispl check failed for case={case_name}: {repr(e)}")
+        _log(f"[DEBUG] JointDispl check failed: case={case_name} err={repr(e)}")
         return False
 
 
@@ -1821,15 +1822,47 @@ def _assign_depth_based_overburden_to_all_areas(
     replace=True,
 ):
     # 1) Ensure load pattern + case exist
+
+    # Confirm load pattern creation (log ret)
     try:
-        model.LoadPatterns.Add(load_pattern, 1, 0.0)
-    except Exception:
-        pass
+        ret_lp = model.LoadPatterns.Add(load_pattern, 1, 0.0)
+        _log("[DEBUG] LoadPatterns.Add:", load_pattern, "ret=", ret_lp)
+    except Exception as e:
+        _log("[DEBUG] LoadPatterns.Add EXC:", load_pattern, "err=", repr(e))
+
+    # Create / define the case
     try:
-        model.LoadCases.StaticLinear.SetCase(case_name)
-        model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
-    except Exception:
-        pass
+        ret_case = model.LoadCases.StaticLinear.SetCase(case_name)
+        _log("[DEBUG] StaticLinear.SetCase:", case_name, "ret=", ret_case)
+    except Exception as e:
+        _log("[DEBUG] StaticLinear.SetCase EXC:", case_name, "err=", repr(e))
+
+    # Attach the load pattern to the case
+    try:
+        ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
+        _log("[DEBUG] StaticLinear.SetLoads:", case_name, "pattern=", load_pattern, "ret=", ret_loads)
+
+        # IMPORTANT: stop early if SetLoads failed
+        if isinstance(ret_loads, (int, float)) and int(ret_loads) != 0:
+            _log("[DEBUG] StaticLinear.SetLoads FAILED -> case will not output. ret=", ret_loads)
+            return {
+                "assigned_areas": 0,
+                "failed_areas": 0,
+                "case": case_name,
+                "pattern": load_pattern,
+                "error": f"SetLoads ret={ret_loads}"
+            }
+
+    except Exception as e:
+        _log("[DEBUG] StaticLinear.SetLoads EXC:", case_name, "err=", repr(e))
+        return {
+            "assigned_areas": 0,
+            "failed_areas": 0,
+            "case": case_name,
+            "pattern": load_pattern,
+            "error": f"SetLoads exception: {repr(e)}"
+        }
+
 
     # 2) Collect all joints + figure out "vertex" elevation
     joints = list(_iter_all_point_coords(model))
@@ -1957,32 +1990,35 @@ def _assign_depth_based_overburden_to_all_areas(
 
 
 def _ensure_case_runs_in_analysis(model, case_name):
-    """
-    Some SAP2000 COM builds do not automatically include newly-created cases
-    in the analysis run set. This forces the case to be runnable if the API supports it.
-    """
     try:
         analyze = model.Analyze
 
-        # Most common signature on many builds:
-        # SetRunCaseFlag(CaseName, Run, All)
-        try:
-            analyze.SetRunCaseFlag(str(case_name), True, True)
-            return True
-        except Exception:
-            pass
+        for meth in ("SetRunCaseFlag", "SetRunCaseFlag_1"):
+            try:
+                fn = getattr(analyze, meth)
+            except AttributeError:
+                continue
 
-        # Variant found on some installs:
-        try:
-            analyze.SetRunCaseFlag_1(str(case_name), True, True)
-            return True
-        except Exception:
-            pass
+            try:
+                ret = fn(str(case_name), True, True)
+                _log("[DEBUG] Analyze."+meth+":", case_name, "ret=", ret)
+                return (ret == 0)
+            except TypeError:
+                # some builds use (CaseName, Run) only
+                try:
+                    ret = fn(str(case_name), True)
+                    _log("[DEBUG] Analyze."+meth+"(2-arg):", case_name, "ret=", ret)
+                    return (ret == 0)
+                except Exception as e:
+                    _log("[DEBUG] Analyze."+meth+" failed:", case_name, "err=", repr(e))
+            except Exception as e:
+                _log("[DEBUG] Analyze."+meth+" failed:", case_name, "err=", repr(e))
 
-        # If no method exists, we can't force it here (we'll rely on re-run analysis).
+        _log("[DEBUG] No SetRunCaseFlag method available on this build.")
         return False
 
-    except Exception:
+    except Exception as e:
+        _log("[DEBUG] _ensure_case_runs_in_analysis failed:", repr(e))
         return False
 
 
