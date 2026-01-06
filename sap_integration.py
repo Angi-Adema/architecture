@@ -182,6 +182,7 @@ def _ensure_openpyxl():
 
 # --- DEBUG SWITCH ---
 DEBUG = True
+DEBUG_COM_SHAPES = False
 
 # ---- Soil constants (backend-fixed) ----
 OVERBURDEN_PRESSURE_NPM2 = 18000.0  # N/m^2 (Pa) constant (backend)
@@ -911,22 +912,14 @@ def _case_has_any_joint_displ_output(model, case_name, vertical_axis="Z"):
         _select_case(model, case_name)
 
         def _get_nres_for_joint(joint_name):
-            # Call the most compatible JointDispl signature for your build
             try:
                 out = model.Results.JointDispl(str(joint_name), 0)
             except Exception:
                 out = model.Results.JointDispl(str(joint_name), 0, case_name)
 
-            nres_raw = 0
-            if isinstance(out, (list, tuple)) and len(out) >= 2:
-                nres_raw = out[1]
-
-            # Some builds return tuples like (0,) etc.
-            if isinstance(nres_raw, (list, tuple)):
-                nres_raw = nres_raw[0] if len(nres_raw) else 0
-
+            ret, n, base = _sap_results_header(out)
             try:
-                return int(nres_raw or 0)
+                return int(n or 0)
             except Exception:
                 return 0
 
@@ -943,6 +936,50 @@ def _case_has_any_joint_displ_output(model, case_name, vertical_axis="Z"):
     except Exception as e:
         _log("[DEBUG] JointDispl check failed:", "case=", case_name, "err=", repr(e))
         return False
+    
+def _sap_results_header(out):
+    """
+    Normalize SAP Results return shapes.
+    Returns: (ret, nres, base)
+      - ret: SAP return code (0=OK)
+      - nres: number of results
+      - base: index where Obj array starts (so Obj is out[base])
+    Supports both:
+      A) (ret, nres, Obj, Elm, ...)
+      B) (nres, Obj, Elm, ..., ret)
+    """
+    if not isinstance(out, (list, tuple)):
+        return (None, 0, None)
+
+    L = len(out)
+    if L < 3:
+        return (None, 0, None)
+
+    def _as_int(x):
+        if isinstance(x, (list, tuple)):
+            x = x[0] if len(x) else 0
+        try:
+            return int(x)
+        except Exception:
+            return None
+
+    first = _as_int(out[0])
+    second = _as_int(out[1])
+    last = _as_int(out[-1])
+
+    # Shape A: (ret, nres, Obj, ...)
+    if first is not None and first in (0, 1, 2) and second is not None and second >= 0:
+        return (first, second, 2)
+
+    # Shape B: (nres, Obj, ..., ret)
+    if last is not None and last in (0, 1, 2) and first is not None and first >= 0:
+        return (last, first, 1)
+
+    # Fallback: assume classic
+    if first is not None and second is not None:
+        return (first, second, 2)
+
+    return (None, 0, None)
 
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
@@ -950,7 +987,6 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
     _select_case(model, case)
 
     def _call_jointdispl(nm):
-        # prefer (name, itemType) then fallback (name, itemType, case)
         try:
             return model.Results.JointDispl(str(nm), 0)
         except Exception:
@@ -965,28 +1001,24 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
         if not isinstance(out, (list, tuple)) or len(out) < 13:
             continue
 
-        nres = out[1]
-        if isinstance(nres, (list, tuple)):
-            nres = nres[0] if len(nres) else 0
-        try:
-            n = int(nres or 0)
-        except Exception:
-            n = 0
-        if n <= 0:
+        ret, n, base = _sap_results_header(out)
+        if base is None or n <= 0:
             continue
 
-        Obj      = _as_seq(out[2], n)
-        Elm      = _as_seq(out[3], n)
-        LoadCase = _as_seq(out[4], n)
-        StepType = _as_seq(out[5], n)
-        StepNum  = _as_seq(out[6], n)
+        # Layout starting at base:
+        # Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3
+        Obj      = _as_seq(out[base + 0], n)
+        Elm      = _as_seq(out[base + 1], n)
+        LoadCase = _as_seq(out[base + 2], n)
+        StepType = _as_seq(out[base + 3], n)
+        StepNum  = _as_seq(out[base + 4], n)
 
-        U1 = _as_seq(out[7],  n)
-        U2 = _as_seq(out[8],  n)
-        U3 = _as_seq(out[9],  n)
-        R1 = _as_seq(out[10], n)
-        R2 = _as_seq(out[11], n)
-        R3 = _as_seq(out[12], n)
+        U1 = _as_seq(out[base + 5],  n)
+        U2 = _as_seq(out[base + 6],  n)
+        U3 = _as_seq(out[base + 7],  n)
+        R1 = _as_seq(out[base + 8],  n)
+        R2 = _as_seq(out[base + 9],  n)
+        R3 = _as_seq(out[base + 10], n)
 
         for i in range(n):
             rows.append({
@@ -1006,38 +1038,53 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
     _select_case(model, case)
 
     for fname in frame_names:
-        try:
-            ret, nres, Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3 = \
-                model.Results.FrameForce(str(fname), 1, case)  # 1 = ends only
-        except Exception:
+        out = None
+
+        # Try common signatures
+        for args in ((str(fname), 1, str(case)), (str(fname), 1), (str(fname), 1, 0, str(case))):
+            try:
+                out = model.Results.FrameForce(*args)
+                break
+            except Exception:
+                continue
+
+        if not isinstance(out, (list, tuple)) or len(out) < 12:
             continue
 
-        n = int(nres or 0)
-        if n == 0:
+        ret, nres, base = _sap_results_header(out)
+        nres = int(nres or 0)
+        if base is None or nres <= 0:
             continue
 
-        Obj = _as_seq(Obj, n)
-        LoadCase = _as_seq(LoadCase, n)
-        StepType = _as_seq(StepType, n)
-        StepNum = _as_seq(StepNum, n)
-        P = _as_seq(P, n)
-        V2 = _as_seq(V2, n)
-        V3 = _as_seq(V3, n)
-        T = _as_seq(T, n)
-        M2 = _as_seq(M2, n)
-        M3 = _as_seq(M3, n)
+        # Layout starting at base:
+        # Obj, Elm, LoadCase, StepType, StepNum, P, V2, V3, T, M2, M3
+        Obj      = _as_seq(out[base + 0], nres)
+        Elm      = _as_seq(out[base + 1], nres)
+        LoadCase = _as_seq(out[base + 2], nres)
+        StepType = _as_seq(out[base + 3], nres)
+        StepNum  = _as_seq(out[base + 4], nres)
 
-        for i in range(n):
+        P  = _as_seq(out[base + 5], nres)
+        V2 = _as_seq(out[base + 6], nres)
+        V3 = _as_seq(out[base + 7], nres)
+        T  = _as_seq(out[base + 8], nres)
+        M2 = _as_seq(out[base + 9], nres)
+        M3 = _as_seq(out[base + 10], nres)
+
+        for i in range(nres):
+            # SAP “ends only” often returns I/J alternating rows
             end = "I" if (i % 2 == 0) else "J"
             rows.append({
-                "Frame": Obj[i],
-                "Case": LoadCase[i],
-                "StepType": StepType[i],
+                "Frame": str(Obj[i]),
+                "Elm": str(Elm[i]),
+                "Case": str(LoadCase[i]),
+                "StepType": str(StepType[i]),
                 "StepNum": StepNum[i],
                 "End": end,
                 "P": P[i], "V2": V2[i], "V3": V3[i],
                 "T": T[i], "M2": M2[i], "M3": M3[i],
             })
+
     return pd.DataFrame(rows)
 
 def _collect_shell_forces_moments(model, area_names, case="Dead"):
@@ -1081,15 +1128,8 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
         return None
 
     def _nres(out):
-        if not isinstance(out, (list, tuple)) or len(out) < 2:
-            return 0
-        n = out[1]
-        if isinstance(n, (list, tuple)):
-            n = n[0] if len(n) else 0
-        try:
-            return int(n or 0)
-        except Exception:
-            return 0
+        ret, n, base = _sap_results_header(out)
+        return int(n or 0)
 
     for an in area_names:
         out = None
@@ -1123,20 +1163,26 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 
             # Typical layout:
             # ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
-            Obj      = _as_seq(out[2],  nres)
-            Elm      = _as_seq(out[3],  nres)
-            LoadCase = _as_seq(out[4],  nres)
-            StepType = _as_seq(out[5],  nres)
-            StepNum  = _as_seq(out[6],  nres)
+            ret, nres, base = _sap_results_header(out)
+            if base is None or nres <= 0:
+                continue
 
-            F11 = _as_seq(out[7],  nres)
-            F22 = _as_seq(out[8],  nres)
-            F12 = _as_seq(out[9],  nres)
-            M11 = _as_seq(out[10], nres)
-            M22 = _as_seq(out[11], nres)
-            M12 = _as_seq(out[12], nres)
-            V13 = _as_seq(out[13], nres)
-            V23 = _as_seq(out[14], nres)
+            # Expected starting at base:
+            # Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
+            Obj      = _as_seq(out[base + 0],  nres)
+            Elm      = _as_seq(out[base + 1],  nres)
+            LoadCase = _as_seq(out[base + 2],  nres)
+            StepType = _as_seq(out[base + 3],  nres)
+            StepNum  = _as_seq(out[base + 4],  nres)
+
+            F11 = _as_seq(out[base + 5],  nres)
+            F22 = _as_seq(out[base + 6],  nres)
+            F12 = _as_seq(out[base + 7],  nres)
+            M11 = _as_seq(out[base + 8],  nres)
+            M22 = _as_seq(out[base + 9],  nres)
+            M12 = _as_seq(out[base + 10], nres)
+            V13 = _as_seq(out[base + 11], nres)
+            V23 = _as_seq(out[base + 12], nres)
 
             for i in range(nres):
                 f11 = float(F11[i]); f22 = float(F22[i]); f12 = float(F12[i])
@@ -1410,13 +1456,14 @@ def _extract_model_to_dfs(model):
     Handles SAP2000 COM return-shape weirdness across versions.
     """
 
-    # 🔍 TEMP DEBUG — inspect raw COM return shapes (remove after one run)
-    try:
-        _log("RAW PointObj.GetNameList:", repr(model.PointObj.GetNameList()))
-        _log("RAW AreaObj.GetNameList:", repr(model.AreaObj.GetNameList()))
-        _log("RAW FrameObj.GetNameList:", repr(model.FrameObj.GetNameList()))
-    except Exception as e:
-        _log("RAW NameList debug failed:", e)
+    # 🔍 TEMP DEBUG — inspect raw COM return shapes (enable only when needed)
+    if DEBUG_COM_SHAPES and DEBUG:
+        try:
+            _log("RAW PointObj.GetNameList:", repr(model.PointObj.GetNameList()))
+            _log("RAW AreaObj.GetNameList:", repr(model.AreaObj.GetNameList()))
+            _log("RAW FrameObj.GetNameList:", repr(model.FrameObj.GetNameList()))
+        except Exception as e:
+            _log("RAW NameList debug failed:", e)
 
     def _coord(nm: str):
         for args in [(nm, "Global"), (nm,)]:
@@ -2404,6 +2451,26 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         results_xlsx = base + "_results.xlsx"
         _ensure_xlsxwriter()
 
+        MAX_EXCEL_ROWS = 1_048_576
+        MAX_EXCEL_DATA_ROWS = MAX_EXCEL_ROWS - 1  # leave 1 row for headers
+
+        def _write_df_safe(df, sheet_name, xlw, base_path):
+            """
+            Writes df to Excel if it fits. If too large, writes CSV instead.
+            Returns: "excel" or "csv" or "skip"
+            """
+            if df is None or df.empty:
+                return "skip"
+
+            if len(df) > MAX_EXCEL_DATA_ROWS:
+                csv_path = f"{base_path}_{sheet_name}.csv"
+                df.to_csv(csv_path, index=False)
+                _log(f"[DEBUG] {sheet_name} too large for Excel ({len(df)} rows). Wrote CSV:", csv_path)
+                return "csv"
+
+            df.to_excel(xlw, sheet_name=sheet_name, index=False)
+            return "excel"
+
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
             # ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
             summary_rows = []
@@ -2424,8 +2491,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 _settlement_mm_from_displacements(disp_df, keys["corners"], vertical_axis=vaxis).assign(Group="Corners"),
             ], ignore_index=True)
 
-            if not settle_dead.empty:
-                settle_dead.to_excel(xlw, sheet_name="Settlement_Dead_mm", index=False)
+            _write_df_safe(settle_dead, "Settlement_Dead_mm", xlw, base)
 
             if soil and (soil_disp_df is not None) and (not soil_disp_df.empty):
                 settle_soil = pd.concat([
@@ -2434,24 +2500,17 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     _settlement_mm_from_displacements(soil_disp_df, keys["corners"], vertical_axis=vaxis).assign(Group="Corners"),
                 ], ignore_index=True)
 
-                if not settle_soil.empty:
-                    settle_soil.to_excel(xlw, sheet_name="Settlement_Soil_mm", index=False)
+                _write_df_safe(settle_soil, "Settlement_Soil_mm", xlw, base)
 
-            nodes.to_excel(xlw, sheet_name="Nodes", index=False)
-            elems.to_excel(xlw, sheet_name="Elements", index=False)
-            if areas is not None and not areas.empty:
-                areas.to_excel(xlw, sheet_name="Areas", index=False)
+            _write_df_safe(nodes, "Nodes", xlw, base)
+            _write_df_safe(elems, "Elements", xlw, base)
+            _write_df_safe(areas, "Areas", xlw, base)
 
-            if not disp_df.empty:
-                disp_df.to_excel(xlw, sheet_name="JointDisplacements", index=False)
-            if not soil_disp_df.empty:
-                soil_disp_df.to_excel(xlw, sheet_name="Soil_JointDisplacements", index=False)
-            if not force_df.empty:
-                force_df.to_excel(xlw, sheet_name="FrameEndForces", index=False)
-            if not shell_dead_df.empty:
-                shell_dead_df.to_excel(xlw, sheet_name="ShellResults_Dead", index=False)
-            if soil and not shell_soil_df.empty:
-                shell_soil_df.to_excel(xlw, sheet_name="ShellResults_Soil", index=False)
+            _write_df_safe(disp_df, "JointDisplacements", xlw, base)
+            _write_df_safe(soil_disp_df, "Soil_JointDisplacements", xlw, base)
+            _write_df_safe(force_df, "FrameEndForces", xlw, base)
+            _write_df_safe(shell_dead_df, "ShellResults_Dead", xlw, base)
+            _write_df_safe(shell_soil_df, "ShellResults_Soil", xlw, base)
 
             # Optional: dump soil_meta for debugging
             if soil_meta:
@@ -2498,10 +2557,10 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 pd.DataFrame(summary_rows2).to_excel(xlw, sheet_name="SoilSummary", index=False)
 
                 for depth_val, ddf in zip(soil_results["depths"], soil_results["displacements_by_step"]):
-                    if ddf.empty:
+                    if ddf is None or ddf.empty:
                         continue
                     dtag = f"d{str(depth_val).replace('.', '_')}"
-                    ddf.to_excel(xlw, sheet_name=f"SoilDisp_{dtag}", index=False)
+                    _write_df_safe(ddf, f"SoilDisp_{dtag}", xlw, base)
 
         num_areas = 0 if areas is None else len(areas)
 
