@@ -1015,9 +1015,14 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 
     # Try multiple API variants (different SAP builds expose different names)
     candidates = [
-        ("AreaForceShell", lambda a: model.Results.AreaForceShell(str(a), 0, case)),
-        ("AreaForceShell_1", lambda a: model.Results.AreaForceShell_1(str(a), 0, case)),
-        ("ShellForce", lambda a: model.Results.ShellForce(str(a), 0, case)),
+        ("AreaForceShell_elem", lambda a: model.Results.AreaForceShell(str(a), 1, case)),
+        ("AreaForceShell_obj",  lambda a: model.Results.AreaForceShell(str(a), 0, case)),
+
+        ("AreaForceShell_1_elem", lambda a: model.Results.AreaForceShell_1(str(a), 1, case)),
+        ("AreaForceShell_1_obj",  lambda a: model.Results.AreaForceShell_1(str(a), 0, case)),
+
+        ("ShellForce_elem", lambda a: model.Results.ShellForce(str(a), 1, case)),
+        ("ShellForce_obj",  lambda a: model.Results.ShellForce(str(a), 0, case)),
     ]
 
     def _call(area):
@@ -2292,6 +2297,12 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             shell_dead_df = _collect_shell_forces_moments(model, area_names, case="Dead")
             if soil:
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
+
+        _log(
+            "[ROOTCHECK] Shell SOIL coverage",
+            "soil_rows=", 0 if shell_soil_df is None else len(shell_soil_df),
+            "unique_areas=", 0 if shell_soil_df is None or shell_soil_df.empty else shell_soil_df["Area"].nunique()
+        )
 
         # ---- Write results workbook ----
         results_xlsx = base + "_results.xlsx"
