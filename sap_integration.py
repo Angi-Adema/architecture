@@ -925,42 +925,59 @@ def _case_has_any_joint_displ_output(model, case_name, vertical_axis="Z"):
         return False
 
 
-
 def _collect_joint_displacements(model, node_names, case="Dead"):
     rows = []
     _select_case(model, case)
 
+    def _call_jointdispl(nm):
+        # prefer (name, itemType) then fallback (name, itemType, case)
+        try:
+            return model.Results.JointDispl(str(nm), 0)
+        except Exception:
+            return model.Results.JointDispl(str(nm), 0, str(case))
+
     for nname in node_names:
         try:
-            ret, nres, Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3 = \
-                model.Results.JointDispl(str(nname), 0, case)
+            out = _call_jointdispl(nname)
         except Exception:
             continue
 
-        n = int(nres or 0)
-        if n == 0:
+        if not isinstance(out, (list, tuple)) or len(out) < 13:
             continue
 
-        Obj = _as_seq(Obj, n)
-        LoadCase = _as_seq(LoadCase, n)
-        StepType = _as_seq(StepType, n)
-        StepNum = _as_seq(StepNum, n)
-        U1 = _as_seq(U1, n)
-        U2 = _as_seq(U2, n)
-        U3 = _as_seq(U3, n)
-        R1 = _as_seq(R1, n)
-        R2 = _as_seq(R2, n)
-        R3 = _as_seq(R3, n)
+        nres = out[1]
+        if isinstance(nres, (list, tuple)):
+            nres = nres[0] if len(nres) else 0
+        try:
+            n = int(nres or 0)
+        except Exception:
+            n = 0
+        if n <= 0:
+            continue
+
+        Obj      = _as_seq(out[2], n)
+        Elm      = _as_seq(out[3], n)
+        LoadCase = _as_seq(out[4], n)
+        StepType = _as_seq(out[5], n)
+        StepNum  = _as_seq(out[6], n)
+
+        U1 = _as_seq(out[7],  n)
+        U2 = _as_seq(out[8],  n)
+        U3 = _as_seq(out[9],  n)
+        R1 = _as_seq(out[10], n)
+        R2 = _as_seq(out[11], n)
+        R3 = _as_seq(out[12], n)
 
         for i in range(n):
             rows.append({
-                "Node": Obj[i],
-                "Case": LoadCase[i],
-                "StepType": StepType[i],
+                "Node": str(Obj[i]),
+                "Case": str(LoadCase[i]),
+                "StepType": str(StepType[i]),
                 "StepNum": StepNum[i],
                 "UX": U1[i], "UY": U2[i], "UZ": U3[i],
                 "RX": R1[i], "RY": R2[i], "RZ": R3[i],
             })
+
     return pd.DataFrame(rows)
 
 
@@ -1007,23 +1024,43 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
     """
     Collect shell forces/moments for SAP2000 area objects.
 
-    Key fix:
-      - Try ItemType=1 (ELEMENT results) first, because many builds return 0 rows for ItemType=0 (OBJECT).
+    IMPORTANT:
+      Many SAP2000 builds do NOT accept `case` as a parameter in AreaForceShell/ShellForce.
+      The case must be selected via Results.Setup first, then call the API without case.
     """
     rows = []
     _select_case(model, case)
 
-    # ItemType candidates: 1=Element (mesh), 0=Object
-    ITEMTYPE_CANDIDATES = (1, 0)
+    ITEMTYPE_CANDIDATES = (1, 0)  # 1=Element(mesh), 0=Object
+    api_methods = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
 
-    candidates = [
-        ("AreaForceShell",   lambda a, it: model.Results.AreaForceShell(str(a), int(it), case)),
-        ("AreaForceShell_1", lambda a, it: model.Results.AreaForceShell_1(str(a), int(it), case)),
-        ("ShellForce",       lambda a, it: model.Results.ShellForce(str(a), int(it), case)),
-    ]
+    # keep logs short
+    fail_logs_left = 6
+    ok_logs_left = 3
+    best_itemtype_seen = None
 
-    def _nres_from_out(out):
-        """Robustly extract nres across weird COM shapes."""
+    def _try_call(fn, area_name, item_type):
+        nonlocal fail_logs_left, ok_logs_left
+        # Try WITHOUT case first (most common)
+        for args in ((str(area_name), int(item_type)),
+                     (str(area_name), int(item_type), str(case))):  # fallback only
+            try:
+                out = fn(*args)
+                if ok_logs_left > 0:
+                    _log("[DEBUG] Shell probe ok:", "case=", case, "area=", area_name,
+                         "fn=", fn.__name__, "args=", args,
+                         "out_len=", (len(out) if isinstance(out, (list, tuple)) else "n/a"))
+                    ok_logs_left -= 1
+                return out
+            except Exception as e:
+                if fail_logs_left > 0:
+                    _log("[DEBUG] Shell probe fail:", "case=", case, "area=", area_name,
+                         "fn=", fn.__name__, "args=", args, "err=", repr(e))
+                    fail_logs_left -= 1
+                continue
+        return None
+
+    def _nres(out):
         if not isinstance(out, (list, tuple)) or len(out) < 2:
             return 0
         n = out[1]
@@ -1034,42 +1071,38 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
         except Exception:
             return 0
 
-    # Tiny debug: prove which itemtype works
-    probed = 0
-    best_itemtype_seen = None
-
     for an in area_names:
         out = None
-        used = None
+        used_itemtype = None
+        used_api = None
 
         for it in ITEMTYPE_CANDIDATES:
-            for api_name, fn in candidates:
-                try:
-                    out_try = fn(an, it)
-                    nres = _nres_from_out(out_try)
-                    if probed < 3:
-                        _log("[DEBUG] Shell probe:", "case=", case, "area=", an, "api=", api_name, "it=", it, "nres=", nres)
-                        probed += 1
-                    if nres > 0:
-                        out = out_try
-                        used = (api_name, it)
-                        best_itemtype_seen = it
-                        break
-                except Exception:
+            for mname in api_methods:
+                fn = getattr(model.Results, mname, None)
+                if fn is None:
                     continue
+                out_try = _try_call(fn, an, it)
+                if out_try is None:
+                    continue
+                if _nres(out_try) > 0:
+                    out = out_try
+                    used_itemtype = it
+                    used_api = mname
+                    best_itemtype_seen = it
+                    break
             if out is not None:
                 break
 
         if out is None:
             continue
 
-        # Parse the “typical” return layout:
-        # ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
         try:
-            nres = _nres_from_out(out)
+            nres = _nres(out)
             if nres <= 0:
                 continue
 
+            # Typical layout:
+            # ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
             Obj      = _as_seq(out[2],  nres)
             Elm      = _as_seq(out[3],  nres)
             LoadCase = _as_seq(out[4],  nres)
@@ -1103,81 +1136,19 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
                     "Fmax": fmax, "Fmin": fmin,
                     "M11": float(M11[i]), "M22": float(M22[i]), "M12": float(M12[i]),
                     "V13": float(V13[i]), "V23": float(V23[i]),
-                    "ItemTypeUsed": used[1] if used else None,
-                    "APIUsed": used[0] if used else None,
+                    "ItemTypeUsed": used_itemtype,
+                    "APIUsed": used_api,
                 })
-
         except Exception:
             continue
 
     df = pd.DataFrame(rows)
-
-    # One clean summary line:
-    _log("[DEBUG] Shell collect done:", "case=", case, "rows=", len(df), "unique_areas=", (0 if df.empty else df["Area"].nunique()),
+    _log("[DEBUG] Shell collect done:", "case=", case,
+         "rows=", len(df),
+         "unique_areas=", (0 if df.empty else df["Area"].nunique()),
          "best_itemtype=", best_itemtype_seen)
-
     return df
 
-    def _call(area):
-        for name, fn in candidates:
-            try:
-                return fn(area)
-            except Exception:
-                continue
-        return None
-
-    for an in area_names:
-        out = _call(an)
-        if not out:
-            continue
-
-        try:
-            # Typical SAP return tuple shape (varies by build):
-            # ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
-            ret = out[0]
-            nres = int(out[1] or 0)
-            if nres <= 0:
-                continue
-
-            Obj      = _as_seq(out[2], nres)
-            Elm      = _as_seq(out[3], nres)  # sometimes station/element id
-            LoadCase = _as_seq(out[4], nres)
-            StepType = _as_seq(out[5], nres)
-            StepNum  = _as_seq(out[6], nres)
-
-            F11 = _as_seq(out[7],  nres)
-            F22 = _as_seq(out[8],  nres)
-            F12 = _as_seq(out[9],  nres)
-            M11 = _as_seq(out[10], nres)
-            M22 = _as_seq(out[11], nres)
-            M12 = _as_seq(out[12], nres)
-            V13 = _as_seq(out[13], nres)
-            V23 = _as_seq(out[14], nres)
-
-            for i in range(nres):
-                f11 = float(F11[i]); f22 = float(F22[i]); f12 = float(F12[i])
-
-                # Principal membrane forces per unit width:
-                avg = 0.5 * (f11 + f22)
-                rad = ((0.5 * (f11 - f22)) ** 2 + (f12 ** 2)) ** 0.5
-                fmax = avg + rad
-                fmin = avg - rad
-
-                rows.append({
-                    "Area": Obj[i],
-                    "Elm": Elm[i],
-                    "Case": LoadCase[i],
-                    "StepType": StepType[i],
-                    "StepNum": StepNum[i],
-                    "F11": f11, "F22": f22, "F12": f12,
-                    "Fmax": fmax, "Fmin": fmin,
-                    "M11": float(M11[i]), "M22": float(M22[i]), "M12": float(M12[i]),
-                    "V13": float(V13[i]), "V23": float(V23[i]),
-                })
-        except Exception:
-            continue
-
-    return pd.DataFrame(rows)
 
 def _extrema_summary(shell_df, label):
     if shell_df is None or shell_df.empty:
