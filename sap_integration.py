@@ -217,8 +217,6 @@ def _log_load_summary():
             for area_name, err in _LOAD_FAIL_SAMPLES.get(sig, []):
                 _log(f"[LOADSIG] sample fail {sig}: area={area_name} err={err}")
 
-
-
 # ---- Paths for v20 (adjust if installed elsewhere) ----
 DIR_CANDIDATES = [
     r"C:\Program Files\SAP2000 20",
@@ -1871,6 +1869,8 @@ def _assign_depth_based_overburden_to_all_areas(
             assigned_areas += 1
         else:
             failed_areas += 1
+    
+    _log_load_summary()
 
     _log(f"[DEBUG] Overburden assigned_areas={assigned_areas} failed_areas={failed_areas}")
 
