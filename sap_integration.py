@@ -2008,6 +2008,8 @@ def _assign_depth_based_overburden_to_all_areas(
     assigned_areas = 0
     failed_areas = 0
 
+    dbg_left = 5  # show first 5 areas' computed depth/pressure
+
     for an in area_names:
         an = str(an)
 
@@ -2076,6 +2078,15 @@ def _assign_depth_based_overburden_to_all_areas(
         elev_avg = sum(elevs) / len(elevs)
         depth_m = max(0.0, z_grade - elev_avg)
         pressure_Npm2 = float(gamma_soil_Npm3) * float(depth_m)
+
+        if dbg_left > 0:
+            _log("[DEBUG] depth_probe:",
+                "area=", an,
+                "z_grade=", z_grade,
+                "elev_avg=", elev_avg,
+                "depth_m=", depth_m,
+                "pressure_Npm2=", pressure_Npm2)
+            dbg_left -= 1
 
         ok = _assign_area_surface_pressure_by_uniform(
             model,
