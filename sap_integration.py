@@ -13,6 +13,7 @@ import re
 import pandas as pd
 import comtypes.client as cc
 import numpy as np
+from collections import defaultdict
 
 def _sap_get_name_list(res):
     """
@@ -192,6 +193,29 @@ def _log_load_fail_once(*msg):
         _log(*msg)
     elif _FAIL_COUNT == 6:
         _log("[DEBUG] (suppressing further area load errors...)")
+
+_LOAD_FAIL = defaultdict(int)
+_LOAD_FAIL_SAMPLES = defaultdict(list)
+_LOAD_OK = defaultdict(int)
+
+def _log_load_fail(sig, area_name, err):
+    _LOAD_FAIL[sig] += 1
+    # store up to 3 samples per signature
+    if len(_LOAD_FAIL_SAMPLES[sig]) < 3:
+        _LOAD_FAIL_SAMPLES[sig].append((str(area_name), repr(err)))
+
+def _log_load_ok(sig):
+    _LOAD_OK[sig] += 1
+
+def _log_load_summary():
+    # print once at end of overburden assignment
+    for sig in sorted(set(list(_LOAD_FAIL.keys()) + list(_LOAD_OK.keys()))):
+        ok = _LOAD_OK.get(sig, 0)
+        bad = _LOAD_FAIL.get(sig, 0)
+        if ok or bad:
+            _log(f"[LOADSIG] {sig}: ok={ok} fail={bad}")
+            for area_name, err in _LOAD_FAIL_SAMPLES.get(sig, []):
+                _log(f"[LOADSIG] sample fail {sig}: area={area_name} err={err}")
 
 
 
