@@ -846,80 +846,84 @@ def _run_analysis(model):
         _log(f"RunAnalysis raised: {e}")
         raise
 
-def _sap_results_nres(res):
+def _case_has_any_joint_displ_output(model, case_name, vertical_axis="Z"):
     """
-    Robustly extract nres (# results) from SAP Results.* return tuples across builds.
-    Many return (ret, nres, ...), but some return different shapes.
-    """
-    if not isinstance(res, (list, tuple)) or len(res) < 2:
-        return 0
-
-    # Most common: (ret, nres, ...)
-    try:
-        r0 = int(res[0])
-        # if first is ret-like, second is usually nres
-        if len(res) >= 2:
-            return int(res[1] or 0)
-    except Exception:
-        pass
-
-    # Fallback: find the first "reasonable" integer count in the tuple
-    for x in res:
-        try:
-            xi = int(x)
-            if 0 <= xi <= 10_000_000:  # sanity range
-                # don't treat ret codes like 0/1 as nres unless we have nothing else
-                # prefer something > 0 if present
-                if xi > 1:
-                    return xi
-        except Exception:
-            continue
-
-    # last resort: maybe it really is 0/1 shape
-    for x in res:
-        try:
-            xi = int(x)
-            if xi in (0, 1):
-                continue
-        except Exception:
-            continue
-
-    return 0
-
-
-def _case_has_any_joint_displ_output(model, case_name):
-    """
-    Returns True if the given case produced at least 1 joint displacement result.
-    We try a joint that is likely NOT restrained (highest-elevation joint).
+    Returns True if the given case produced joint displacement output for at least
+    one of several probe joints (vertex + rim + mid), to reduce false negatives.
     """
     try:
-        joints = list(_iter_all_point_coords(model))
+        joints = list(_iter_all_point_coords(model))  # (name,x,y,z)
         if not joints:
             _log("[DEBUG] JointDispl check: no joints found")
             return False
 
-        # pick highest joint along Z (or whatever vertical axis you are using elsewhere)
-        # here we'll assume Z for check; it's just a verification probe
-        test_joint = max(joints, key=lambda t: t[3])[0]  # (name,x,y,z) -> pick max z
+        ax = (vertical_axis or "Z").upper()
+        axis_index = 2 if ax == "Z" else (1 if ax == "Y" else 0)
+
+        # ---- Build probe joints ----
+        # Vertex (highest along axis)
+        vtx = max(joints, key=lambda t: t[1 + axis_index])[0]
+
+        # Rim candidate: lowest along axis
+        min_elev = min(t[1 + axis_index] for t in joints)
+        rim = [t for t in joints if abs(t[1 + axis_index] - min_elev) <= 1e-6]
+
+        # If we have rim points, pick the farthest from rim centroid (likely a corner)
+        if rim:
+            cx = sum(t[1] for t in rim) / len(rim)
+            cy = sum(t[2] for t in rim) / len(rim)
+            rim_pick = max(rim, key=lambda t: (t[1] - cx) ** 2 + (t[2] - cy) ** 2)[0]
+        else:
+            # fallback: just use the lowest point
+            rim_pick = min(joints, key=lambda t: t[1 + axis_index])[0]
+
+        # Mid-elevation point (median along axis)
+        joints_sorted = sorted(joints, key=lambda t: t[1 + axis_index])
+        mid_pick = joints_sorted[len(joints_sorted) // 2][0]
+
+        # De-dupe while preserving order
+        probes = []
+        for nm in (vtx, rim_pick, mid_pick):
+            s = str(nm)
+            if s not in probes:
+                probes.append(s)
 
         _select_case(model, case_name)
 
-        try:
-            out = model.Results.JointDispl(str(test_joint), 0)
-        except Exception:
-            out = model.Results.JointDispl(str(test_joint), 0, case_name)
+        def _get_nres_for_joint(joint_name):
+            # Call the most compatible JointDispl signature for your build
+            try:
+                out = model.Results.JointDispl(str(joint_name), 0)
+            except Exception:
+                out = model.Results.JointDispl(str(joint_name), 0, case_name)
 
-        if isinstance(out, (list, tuple)) and len(out) >= 2:
-            nres = int(out[1] or 0)
-            _log(f"[DEBUG] JointDispl check: case={case_name} joint={test_joint} nres={nres}")
-            return nres > 0
+            nres_raw = 0
+            if isinstance(out, (list, tuple)) and len(out) >= 2:
+                nres_raw = out[1]
 
-        _log(f"[DEBUG] JointDispl check: case={case_name} joint={test_joint} returned unexpected shape")
+            # Some builds return tuples like (0,) etc.
+            if isinstance(nres_raw, (list, tuple)):
+                nres_raw = nres_raw[0] if len(nres_raw) else 0
+
+            try:
+                return int(nres_raw or 0)
+            except Exception:
+                return 0
+
+        # ---- Probe ----
+        for j in probes:
+            nres = _get_nres_for_joint(j)
+            _log("[DEBUG] JointDispl probe:", "case=", case_name, "joint=", j, "nres=", nres)
+            if nres > 0:
+                return True
+
+        _log("[DEBUG] JointDispl check:", "case=", case_name, "no output on probes=", probes)
         return False
 
     except Exception as e:
-        _log(f"[DEBUG] JointDispl check failed: case={case_name} err={repr(e)}")
+        _log("[DEBUG] JointDispl check failed:", "case=", case_name, "err=", repr(e))
         return False
+
 
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
@@ -1839,10 +1843,47 @@ def _assign_depth_based_overburden_to_all_areas(
 
     # Attach the load pattern to the case
     try:
-        ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, [load_pattern], [1.0])
+        # Some SAP v20 COM type libraries declare the SF array as BSTR (string),
+        # so passing floats throws: "unicode string expected instead of float instance".
+        # We'll try a couple safe variants.
+
+        ret_loads = None
+        err_last = None
+
+        # Variant A: lists, but SF as strings
+        try:
+            ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, [str(load_pattern)], [str(1.0)])
+        except Exception as e:
+            err_last = e
+
+        # Variant B: tuples, SF as strings (often better for COM SAFEARRAY)
+        if ret_loads is None:
+            try:
+                ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, (str(load_pattern),), (str(1.0),))
+            except Exception as e:
+                err_last = e
+
+        # Variant C: sometimes COM wants scalar pattern + scalar SF
+        if ret_loads is None:
+            try:
+                ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, str(load_pattern), str(1.0))
+            except Exception as e:
+                err_last = e
+
         _log("[DEBUG] StaticLinear.SetLoads:", case_name, "pattern=", load_pattern, "ret=", ret_loads)
 
-        # IMPORTANT: stop early if SetLoads failed
+        # If we never got a ret, it failed all signatures
+        if ret_loads is None:
+            _log("[DEBUG] StaticLinear.SetLoads FAILED (all signatures). last_err=", repr(err_last))
+            return {
+                "assigned_areas": 0,
+                "failed_areas": 0,
+                "case": case_name,
+                "pattern": load_pattern,
+                "error": f"SetLoads exception: {repr(err_last)}"
+            }
+
+        # IMPORTANT: stop early if SetLoads returned nonzero
         if isinstance(ret_loads, (int, float)) and int(ret_loads) != 0:
             _log("[DEBUG] StaticLinear.SetLoads FAILED -> case will not output. ret=", ret_loads)
             return {
@@ -1862,6 +1903,7 @@ def _assign_depth_based_overburden_to_all_areas(
             "pattern": load_pattern,
             "error": f"SetLoads exception: {repr(e)}"
         }
+
 
 
     # 2) Collect all joints + figure out "vertex" elevation
