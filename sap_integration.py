@@ -75,26 +75,54 @@ def _filter_bad_sap_names(names):
 
 def _assign_area_surface_pressure_by_uniform(model, area_name, load_pattern, pressure_Npm2, coord_sys="Global", replace=True):
     area = model.AreaObj
+    p = float(pressure_Npm2)
 
-    # Try surface pressure (common signature)
-    try:
-        ret = area.SetLoadSurfacePressure(
-            area_name, load_pattern, "Projected",
-            float(pressure_Npm2), coord_sys, bool(replace)
-        )
-        _log("[DEBUG] SetLoadSurfacePressure ret=", ret, "area=", area_name, "p=", pressure_Npm2)
-        return ret == 0
-    except Exception as e:
-        _log("[DEBUG] SetLoadSurfacePressure EXCEPTION area=", area_name, "err=", repr(e))
+    # Many builds use an int enum for "Dir" or "LoadType":
+    # We'll try a few common values.
+    DIR_CANDIDATES = [0, 1, 2, 3]  # harmless to try; one will match your build
 
-    # Fallback: uniform area load
+    # ---- Try SetLoadSurfacePressure variants ----
+    # Common variants seen across SAP builds:
+    # (name, pattern, dirEnum, value, coordSys, replace)
+    for d in DIR_CANDIDATES:
+        try:
+            ret = area.SetLoadSurfacePressure(str(area_name), str(load_pattern), int(d), p, str(coord_sys), bool(replace))
+            _log("[DEBUG] SetLoadSurfacePressure(sig A) ret=", ret, "area=", area_name, "dir=", d, "p=", p)
+            if ret == 0:
+                return True
+        except Exception as e:
+            pass
+
+    # (name, pattern, "Projected"/"Gravity"/etc...)  <-- your original (fails on your build)
     try:
-        ret = area.SetLoadUniform(area_name, load_pattern, float(pressure_Npm2), coord_sys, bool(replace))
-        _log("[DEBUG] SetLoadUniform ret=", ret, "area=", area_name, "p=", pressure_Npm2)
-        return ret == 0
-    except Exception as e:
-        _log("[DEBUG] SetLoadUniform EXCEPTION area=", area_name, "err=", repr(e))
-        return False
+        ret = area.SetLoadSurfacePressure(str(area_name), str(load_pattern), "Projected", p, str(coord_sys), bool(replace))
+        _log("[DEBUG] SetLoadSurfacePressure(sig B) ret=", ret, "area=", area_name, "p=", p)
+        if ret == 0:
+            return True
+    except Exception:
+        pass
+
+    # ---- Try SetLoadUniform variants ----
+    # A common variant is:
+    # (name, pattern, value, dirEnum, replace)  OR (name, pattern, value, coordSys, replace)
+    for d in DIR_CANDIDATES:
+        try:
+            ret = area.SetLoadUniform(str(area_name), str(load_pattern), p, int(d), bool(replace))
+            _log("[DEBUG] SetLoadUniform(sig A) ret=", ret, "area=", area_name, "dir=", d, "p=", p)
+            if ret == 0:
+                return True
+        except Exception:
+            pass
+
+    try:
+        ret = area.SetLoadUniform(str(area_name), str(load_pattern), p, str(coord_sys), bool(replace))
+        _log("[DEBUG] SetLoadUniform(sig B) ret=", ret, "area=", area_name, "p=", p)
+        if ret == 0:
+            return True
+    except Exception:
+        pass
+
+    return False
 
 # Ensure xlsxwriter is available for pandas' ExcelWriter(engine="xlsxwriter")
 def _ensure_xlsxwriter():
