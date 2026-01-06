@@ -156,6 +156,25 @@ def _log(*a, sep=" ", end="\n"):
         except Exception:
             pass
 
+# --- Limit spammy per-area load errors ---
+_FAIL_COUNT = 0
+
+def _reset_fail_counter():
+    global _FAIL_COUNT
+    _FAIL_COUNT = 0
+
+def _log_load_fail_once(*msg):
+    """
+    Log only the first few per-area load failures to keep console readable.
+    """
+    global _FAIL_COUNT
+    _FAIL_COUNT += 1
+    if _FAIL_COUNT <= 5:
+        _log(*msg)
+    elif _FAIL_COUNT == 6:
+        _log("[DEBUG] (suppressing further area load errors...)")
+
+
 
 # ---- Paths for v20 (adjust if installed elsewhere) ----
 DIR_CANDIDATES = [
@@ -1874,6 +1893,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
 
+    _reset_fail_counter()
     _ensure_openpyxl()
 
     # ---- read Excel ----
