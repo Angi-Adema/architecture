@@ -182,7 +182,7 @@ def _ensure_openpyxl():
 
 # --- DEBUG SWITCH ---
 DEBUG = True
-DEBUG_COM_SHAPES = True
+DEBUG_COM_SHAPES = False
 
 # ---- Soil constants (backend-fixed) ----
 OVERBURDEN_PRESSURE_NPM2 = 18000.0  # N/m^2 (Pa) constant (backend)
