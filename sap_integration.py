@@ -1006,24 +1006,117 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
 def _collect_shell_forces_moments(model, area_names, case="Dead"):
     """
     Collect shell forces/moments for SAP2000 area objects.
-    Expected outputs include:
-      F11,F22,F12 (membrane), M11,M22,M12 (bending), V13,V23 (shear)
-    Returns a DataFrame with one row per result station.
+
+    Key fix:
+      - Try ItemType=1 (ELEMENT results) first, because many builds return 0 rows for ItemType=0 (OBJECT).
     """
     rows = []
     _select_case(model, case)
 
-    # Try multiple API variants (different SAP builds expose different names)
+    # ItemType candidates: 1=Element (mesh), 0=Object
+    ITEMTYPE_CANDIDATES = (1, 0)
+
     candidates = [
-        ("AreaForceShell_elem", lambda a: model.Results.AreaForceShell(str(a), 1, case)),
-        ("AreaForceShell_obj",  lambda a: model.Results.AreaForceShell(str(a), 0, case)),
-
-        ("AreaForceShell_1_elem", lambda a: model.Results.AreaForceShell_1(str(a), 1, case)),
-        ("AreaForceShell_1_obj",  lambda a: model.Results.AreaForceShell_1(str(a), 0, case)),
-
-        ("ShellForce_elem", lambda a: model.Results.ShellForce(str(a), 1, case)),
-        ("ShellForce_obj",  lambda a: model.Results.ShellForce(str(a), 0, case)),
+        ("AreaForceShell",   lambda a, it: model.Results.AreaForceShell(str(a), int(it), case)),
+        ("AreaForceShell_1", lambda a, it: model.Results.AreaForceShell_1(str(a), int(it), case)),
+        ("ShellForce",       lambda a, it: model.Results.ShellForce(str(a), int(it), case)),
     ]
+
+    def _nres_from_out(out):
+        """Robustly extract nres across weird COM shapes."""
+        if not isinstance(out, (list, tuple)) or len(out) < 2:
+            return 0
+        n = out[1]
+        if isinstance(n, (list, tuple)):
+            n = n[0] if len(n) else 0
+        try:
+            return int(n or 0)
+        except Exception:
+            return 0
+
+    # Tiny debug: prove which itemtype works
+    probed = 0
+    best_itemtype_seen = None
+
+    for an in area_names:
+        out = None
+        used = None
+
+        for it in ITEMTYPE_CANDIDATES:
+            for api_name, fn in candidates:
+                try:
+                    out_try = fn(an, it)
+                    nres = _nres_from_out(out_try)
+                    if probed < 3:
+                        _log("[DEBUG] Shell probe:", "case=", case, "area=", an, "api=", api_name, "it=", it, "nres=", nres)
+                        probed += 1
+                    if nres > 0:
+                        out = out_try
+                        used = (api_name, it)
+                        best_itemtype_seen = it
+                        break
+                except Exception:
+                    continue
+            if out is not None:
+                break
+
+        if out is None:
+            continue
+
+        # Parse the “typical” return layout:
+        # ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
+        try:
+            nres = _nres_from_out(out)
+            if nres <= 0:
+                continue
+
+            Obj      = _as_seq(out[2],  nres)
+            Elm      = _as_seq(out[3],  nres)
+            LoadCase = _as_seq(out[4],  nres)
+            StepType = _as_seq(out[5],  nres)
+            StepNum  = _as_seq(out[6],  nres)
+
+            F11 = _as_seq(out[7],  nres)
+            F22 = _as_seq(out[8],  nres)
+            F12 = _as_seq(out[9],  nres)
+            M11 = _as_seq(out[10], nres)
+            M22 = _as_seq(out[11], nres)
+            M12 = _as_seq(out[12], nres)
+            V13 = _as_seq(out[13], nres)
+            V23 = _as_seq(out[14], nres)
+
+            for i in range(nres):
+                f11 = float(F11[i]); f22 = float(F22[i]); f12 = float(F12[i])
+
+                avg = 0.5 * (f11 + f22)
+                rad = ((0.5 * (f11 - f22)) ** 2 + (f12 ** 2)) ** 0.5
+                fmax = avg + rad
+                fmin = avg - rad
+
+                rows.append({
+                    "Area": str(Obj[i]),
+                    "Elm": str(Elm[i]),
+                    "Case": str(LoadCase[i]),
+                    "StepType": str(StepType[i]),
+                    "StepNum": StepNum[i],
+                    "F11": f11, "F22": f22, "F12": f12,
+                    "Fmax": fmax, "Fmin": fmin,
+                    "M11": float(M11[i]), "M22": float(M22[i]), "M12": float(M12[i]),
+                    "V13": float(V13[i]), "V23": float(V23[i]),
+                    "ItemTypeUsed": used[1] if used else None,
+                    "APIUsed": used[0] if used else None,
+                })
+
+        except Exception:
+            continue
+
+    df = pd.DataFrame(rows)
+
+    # One clean summary line:
+    _log("[DEBUG] Shell collect done:", "case=", case, "rows=", len(df), "unique_areas=", (0 if df.empty else df["Area"].nunique()),
+         "best_itemtype=", best_itemtype_seen)
+
+    return df
 
     def _call(area):
         for name, fn in candidates:
