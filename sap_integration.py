@@ -252,16 +252,28 @@ DIR_CANDIDATES = [
     r"C:\Program Files\Computers and Structures\SAP2000 20",
 ]
 
-
 def _as_seq(x, n):
-    """Coerce COM return 'x' to a sequence of length n."""
+    """Coerce COM return 'x' to a sequence of length n (pad/trim safely)."""
     if n is None:
         n = 0
+    n = int(n)
+
+    # Try to treat x as a sequence
     try:
-        _ = len(x)
-        return list(x)
+        seq = list(x)
     except Exception:
-        return [x] * int(n)
+        return [x] * n
+
+    # Trim if too long
+    if len(seq) > n:
+        return seq[:n]
+
+    # Pad if too short
+    if len(seq) < n:
+        pad_val = seq[-1] if seq else None
+        seq.extend([pad_val] * (n - len(seq)))
+
+    return seq
 
 
 def _select_case(model, case):
