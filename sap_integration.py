@@ -104,7 +104,7 @@ def _assign_area_surface_pressure_by_uniform(
         _log_load_fail_once("Pressure cast failed:", "area=", area_name, "pressure=", pressure_Npm2, "err=", repr(e))
         return False
 
-    DIR_CANDIDATES = (0, 1, 2, 3)
+    DIR_CANDIDATES = (1,)
 
     # ---- 1) SetLoadSurfacePressure(name, pattern, dirEnum, value, coordSys, replace)
     for d in DIR_CANDIDATES:
@@ -846,10 +846,51 @@ def _run_analysis(model):
         _log(f"RunAnalysis raised: {e}")
         raise
 
+def _sap_results_nres(res):
+    """
+    Robustly extract nres (# results) from SAP Results.* return tuples across builds.
+    Many return (ret, nres, ...), but some return different shapes.
+    """
+    if not isinstance(res, (list, tuple)) or len(res) < 2:
+        return 0
+
+    # Most common: (ret, nres, ...)
+    try:
+        r0 = int(res[0])
+        # if first is ret-like, second is usually nres
+        if len(res) >= 2:
+            return int(res[1] or 0)
+    except Exception:
+        pass
+
+    # Fallback: find the first "reasonable" integer count in the tuple
+    for x in res:
+        try:
+            xi = int(x)
+            if 0 <= xi <= 10_000_000:  # sanity range
+                # don't treat ret codes like 0/1 as nres unless we have nothing else
+                # prefer something > 0 if present
+                if xi > 1:
+                    return xi
+        except Exception:
+            continue
+
+    # last resort: maybe it really is 0/1 shape
+    for x in res:
+        try:
+            xi = int(x)
+            if xi in (0, 1):
+                continue
+        except Exception:
+            continue
+
+    return 0
+
+
 def _case_has_any_joint_displ_output(model, case_name):
     """
     Returns True if the given case produced at least 1 joint displacement result.
-    We try a single joint (first available) to keep it fast.
+    Uses robust tuple parsing because SAP COM return shapes vary by build.
     """
     try:
         pts = _get_all_point_names(model)
@@ -858,21 +899,27 @@ def _case_has_any_joint_displ_output(model, case_name):
 
         test_joint = str(pts[0])
 
-        # Prefer: select case, then call without passing case_name (more compatible)
+        # Select case for output (helps some builds)
         _select_case(model, case_name)
 
+        # Always try the explicit case argument first
+        out = None
         try:
-            out = model.Results.JointDispl(test_joint, 0)
-        except Exception:
             out = model.Results.JointDispl(test_joint, 0, case_name)
+        except Exception:
+            # Some builds rely on selection and don't take case name
+            out = model.Results.JointDispl(test_joint, 0)
 
-        # Typical tuple: ret, nres, ...
-        if isinstance(out, (list, tuple)) and len(out) >= 2:
-            nres = int(out[1] or 0)
-            return nres > 0
+        nres = _sap_results_nres(out)
+
+        # Log one line so you can see what's happening without spam
+        _log(f"[DEBUG] JointDispl check: case={case_name} joint={test_joint} nres={nres}")
+
+        return nres > 0
+    except Exception as e:
+        _log(f"[DEBUG] JointDispl check failed for case={case_name}: {repr(e)}")
         return False
-    except Exception:
-        return False
+
 
 def _collect_joint_displacements(model, node_names, case="Dead"):
     rows = []
