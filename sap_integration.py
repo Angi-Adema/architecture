@@ -760,23 +760,53 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
             raise RuntimeError(f"Failed to define material '{mat}': {repr(e)}")
 
     def _ensure_shell_prop(sec: str, mat: str, t: float):
-        # Try both API variants, but DO NOT silently ignore failures.
-        try:
-            model.PropArea.SetShell(sec, mat, float(t))
-            return
-        except Exception as e1:
+        """
+        SAP2000 COM builds differ in PropArea.SetShell signature.
+        Try common signatures (v20 often needs MatAng).
+        """
+        last = None
+
+        # Try SetShell
+        for args in [
+            (sec, mat, 0.0, float(t)),                 # Name, MatProp, MatAng, t
+            (sec, mat, 0.0, float(t), 0, "", ""),       # + Color, Notes, GUID (common pattern)
+            (sec, mat, 0.0, float(t), 0, "", "", ""),   # sometimes extra param exists in some builds
+        ]:
             try:
-                model.PropArea.SetShell_1(sec, mat, float(t))
+                model.PropArea.SetShell(*args)
+
                 return
-            except Exception as e2:
-                raise RuntimeError(
-                    f"Failed to define shell property sec='{sec}' mat='{mat}' t={t}. "
-                    f"SetShell err={repr(e1)} ; SetShell_1 err={repr(e2)}"
-                )
+            except TypeError as e:
+                last = ("SetShell", args, e)
+            except Exception as e:
+                raise RuntimeError(f"SetShell failed (not signature): {repr(e)}")
+
+        # Try SetShell_1 (signature varies)
+        for args in [
+            (sec, mat, 0.0, float(t)),
+            (sec, mat, 0.0, float(t), 0, "", ""),
+            (sec, mat, 0.0, float(t), 0, "", "", ""),
+        ]:
+            try:
+                model.PropArea.SetShell_1(*args)
+                return
+            except TypeError as e:
+                last = ("SetShell_1", args, e)
+            except Exception as e:
+                raise RuntimeError(f"SetShell_1 failed (not signature): {repr(e)}")
+
+        # If we get here, nothing matched your COM signature
+        fn, args, err = last if last else ("SetShell/SetShell_1", None, "Unknown")
+        raise RuntimeError(
+            f"Failed to define shell property sec='{sec}' mat='{mat}' t={t}. "
+            f"Last tried: {fn}{args} err={repr(err)}"
+        )
 
     # Ensure the default baseline exists
     _ensure_material(mat_name)
     _ensure_shell_prop(sec_name, mat_name, float(thick_m))
+
+    _log("[DEBUG] Shell property ensured:", sec_name, mat_name, thick_m)
 
     for i, (_, r) in enumerate(areas_df.iterrows()):
         name = str(r["Area"]).strip()
