@@ -840,6 +840,8 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                     # (Name, ShellType, MatProp, Notes, MatAng, Thickness, Color, Notes2, GUID)
                     (sec, int(st), mat, "", 0.0, float(t), 0, "", ""),
 
+                    (sec, int(st), mat, "", 0.0, float(t), "", "", ""),
+
                     # Thickness last:
                     # (Name, ShellType, MatProp, MatAng, Color, Notes, GUID, Thickness)
                     (sec, int(st), mat, 0.0, 0, "", "", float(t)),
