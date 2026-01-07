@@ -10,6 +10,7 @@ import json
 import os
 import math
 import re
+from xml.parsers.expat import model
 import pandas as pd
 import comtypes.client as cc
 import numpy as np
@@ -2429,6 +2430,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     Note: constant overburden is BACKEND fixed as OVERBURDEN_PRESSURE_NPM2.
     """
+
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
 
@@ -2486,7 +2488,11 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 default_section=("SHELL_200", default_mat, 0.20)
             )
 
-            # Orient area local axes based on node labels (1 and E+3), fallback to (1,23)
+            area_live = _get_all_area_names(model)
+            _log("[DEBUG] SAP area objects (live):", len(area_live))
+            _log("[DEBUG] First 10 SAP area names:", area_live[:10])
+
+            # Orient area local axes...
             try:
                 nodes_tot = len(nodes_in)
                 E = int(round(nodes_tot ** 0.5)) - 1
