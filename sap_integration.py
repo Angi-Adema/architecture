@@ -2741,12 +2741,12 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 model.Results.Setup.SetCaseSelectedForOutput("Dead")
                 model.Results.Setup.SetOptionMode(0)
 
-                # 🔍 DEBUG: confirm selection state
+                # 🔍 DEBUG: confirm selection state (Dead)
                 try:
                     sel = model.Results.Setup.GetCaseSelectedForOutput()
-                    _log("[DEBUG] Currently selected for SHELL DEAD output:", repr(sel))
+                    _log("[DEBUG] Currently selected for output (Dead):", repr(sel))
                 except Exception as e:
-                    _log("[DEBUG] GetCaseSelectedForOutput (SHELL DEAD) failed:", repr(e))
+                    _log("[DEBUG] GetCaseSelectedForOutput failed (Dead):", repr(e))
 
             except Exception as e:
                 _log("[DEBUG] Selecting Dead for shell output failed:", repr(e))
@@ -2760,16 +2760,25 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE_NAME)
                     model.Results.Setup.SetOptionMode(0)
 
-                    # 🔍 DEBUG: confirm selection state
+                    # 🔍 DEBUG: confirm selection state (Soil)
                     try:
                         sel = model.Results.Setup.GetCaseSelectedForOutput()
-                        _log("[DEBUG] Currently selected for SHELL SOIL output:", repr(sel))
+                        _log("[DEBUG] Currently selected for output (Soil):", repr(sel))
                     except Exception as e:
-                        _log("[DEBUG] GetCaseSelectedForOutput (SHELL SOIL) failed:", repr(e))
+                        _log("[DEBUG] GetCaseSelectedForOutput failed (Soil):", repr(e))
 
                 except Exception as e:
                     _log("[DEBUG] Selecting SOIL_CASE for shell output failed:", repr(e))
 
+                # ✅ QUICK PROBE: does SOIL_CASE have ANY joint displacement output at all?
+                # Put this BEFORE collecting shell results so you know if the case is dead.
+                try:
+                    probe = _collect_joint_displacements(model, node_names, case=SOIL_CASE_NAME)
+                    _log("[DEBUG] SOIL_CASE JointDispl probe rows:", 0 if probe is None else len(probe))
+                except Exception as e:
+                    _log("[DEBUG] SOIL_CASE JointDispl probe failed:", repr(e))
+
+                # ✅ collect SOIL shell results ONCE
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
 
         _log(
