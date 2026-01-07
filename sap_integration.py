@@ -2439,6 +2439,21 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
     nodes_in = _read_nodes_sheet(input_xlsx)
     elems_in = _read_elements_sheet(input_xlsx)
 
+    try:
+        areas_in = _read_areas_sheet(input_xlsx)
+        _log("[DEBUG] areas_in rows:", 0 if areas_in is None else len(areas_in))
+
+        # If the sheet exists but contains 0 data rows → treat as None
+        if areas_in is not None and areas_in.empty:
+            areas_in = None
+
+    except Exception:
+        areas_in = None
+
+    # ---- FAST FAIL: Areas must exist for shells ----
+    if areas_in is None:
+        raise RuntimeError("Areas sheet is missing or empty — no shell objects will be created.")
+    
     _log(
         "Bounds:",
         f"X [{nodes_in['X'].min()}, {nodes_in['X'].max()}], "
@@ -2448,14 +2463,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     if nodes_in.empty:
         raise ValueError("Nodes sheet is empty.")
-
-    try:
-        areas_in = _read_areas_sheet(input_xlsx)
-        _log("[DEBUG] areas_in rows:", 0 if areas_in is None else len(areas_in))
-        if areas_in is not None and areas_in.empty:
-            areas_in = None
-    except Exception:
-        areas_in = None
 
     _ = _infer_ne_from_filename(input_xlsx) or 4  # kept for compatibility if you use later
 
@@ -2490,6 +2497,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         # Extract the actual built model (what SAP really has)
         nodes, elems, areas = _extract_model_to_dfs(model)
+
+        _log("[DEBUG] SAP area objects (live):", len(_get_all_area_names(model)))
+        _log("[DEBUG] First 10 SAP area names:", _get_all_area_names(model)[:10])
 
         _log("[DEBUG] Extracted:", f"nodes={len(nodes)} elems={len(elems)} areas_df={0 if areas is None else len(areas)}")
         _log("[DEBUG] SAP area objects:", len(_get_all_area_names(model)))
