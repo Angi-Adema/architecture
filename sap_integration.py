@@ -927,6 +927,20 @@ def _run_analysis(model):
     try:
         ret = model.Analyze.RunAnalysis()
         _log(f"RunAnalysis ret={ret}")
+
+        # 🔴 CRITICAL: force result cases to be selectable via API
+        try:
+            model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+
+            # Select ONLY the cases you will query
+            model.Results.Setup.SetCaseSelectedForOutput("Dead")
+            model.Results.Setup.SetCaseSelectedForOutput("SOIL_CASE")
+
+            res = model.Results.Setup.GetCaseSelectedForOutput()
+            _log("[DEBUG] Cases selected for output:", repr(res))
+        except Exception as e:
+            _log("[DEBUG] Output case selection failed:", repr(e))
+
         return ret
     except Exception as e:
         _log(f"RunAnalysis raised: {e}")
