@@ -767,7 +767,7 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
         We'll brute-force the common variants.
         """
         last = None
-        shell_types = [0, 1, 2, 3, 4]
+        shell_types = [4]
 
         def sig_mismatch(e: Exception) -> bool:
             return isinstance(e, (TypeError, ValueError, ctypes.ArgumentError))
@@ -813,9 +813,10 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                     # (Name, ShellType, MatProp, Notes, MatAng, Thickness, Color, Notes2, GUID)
                     (sec, int(st), mat, "", 0.0, float(t), 0, "", ""),
 
-                    # Variant where thickness comes at the end:
-                    # (Name, ShellType, MatProp, Notes, MatAng, Color, Notes2, GUID, Thickness)
-                    (sec, int(st), mat, "", 0.0, 0, "", "", float(t)),
+                    # 9-arg style where arg4 is Notes (string) and arg7 must be float
+                    (sec, int(st), mat, "", 0.0, float(t), float(t), 0, ""),  # arg6 & arg7 both floats
+                    (sec, int(st), mat, "", 0.0, float(t), 0.0,     0, ""),  # arg7 float, maybe "extra thickness" = 0
+                    (sec, int(st), mat, "", 0.0, 0.0,     float(t), 0, ""),  # thickness might actually be arg7
                 ]
 
                 for args in candidates:
