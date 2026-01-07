@@ -770,7 +770,7 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
         shell_types = [0, 1, 2, 3, 4]
 
         def sig_mismatch(e: Exception) -> bool:
-            return isinstance(e, (TypeError, ctypes.ArgumentError))
+            return isinstance(e, (TypeError, ValueError, ctypes.ArgumentError))
 
         def try_call(fn_name: str, args):
             nonlocal last
@@ -821,9 +821,18 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                     (sec, int(st), mat, 0.0, float(t)),
                     (sec, int(st), mat, float(t), 0.0),
 
-                    # Thickness later (your error suggests this might be happening):
-                    # (Name, ShellType, MatProp, MatAng, Color, Notes, GUID, Thickness)
-                    (sec, int(st), mat, 0.0, 0, "", "", float(t)),
+                    # Thickness later (your build expects arg4 as string)
+                    (sec, int(st), mat, "", 0.0, float(t), 0, ""),
+
+                    # Some builds: (Name, ShellType, MatProp, Notes, Thickness, MatAng, Color, GUID)
+                    (sec, int(st), mat, "", float(t), 0.0, 0, ""),
+
+                    # Some builds: (Name, ShellType, MatProp, Notes, Thickness, Color, GUID)
+                    (sec, int(st), mat, "", float(t), 0, ""),
+
+                    # Some builds include GUID separately (9 args):
+                    # (Name, ShellType, MatProp, Notes, MatAng, Thickness, Color, Notes2, GUID)
+                    (sec, int(st), mat, "", 0.0, float(t), 0, "", ""),
                 ]
                 for args in candidates:
                     if try_call(fn, args):
