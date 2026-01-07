@@ -1068,16 +1068,20 @@ def _collect_joint_displacements(model, node_names=None, case="Dead"):
     """
     _select_case(model, case)
 
-    # ---- Call ONCE: global joint displacements ----
+    # ---- Call ONCE: request all joints (SAP expects a name first) ----
     out = None
-    for args in ((0,), (0, str(case))):
+
+    # Most SAP builds accept blank "" to mean "all objects" when ItemTypeElm=0
+    # Some accept "ALL" explicitly. Try both.
+    for joint_name in ("", "ALL"):
         try:
-            out = model.Results.JointDispl(*args)
+            out = model.Results.JointDispl(str(joint_name), 0)
             break
         except Exception:
             continue
 
-    if not isinstance(out, (list, tuple)) or len(out) < 10:
+    # If still None, give up safely
+    if out is None:
         return pd.DataFrame()
 
     ret, n_header, base = _sap_results_header(out)
@@ -1901,7 +1905,7 @@ def sweep_soil_pressure_by_depth(
 
         disp_df.insert(0, "Depth_m", d)
         disp_df.insert(1, "Multiplier", multiplier)
-        
+
         if not force_df.empty:
             force_df.insert(0, "Depth_m", d)
             force_df.insert(1, "Multiplier", multiplier)
@@ -2038,7 +2042,7 @@ def _assign_constant_overburden_to_all_areas(
         return {"assigned_areas": 0}
 
     try:
-        model.LoadPatterns.Add(load_pattern, 1, 0.0)
+        model.LoadPatterns.Add(load_pattern, 8, 0.0)
     except Exception:
         pass
 
@@ -2084,7 +2088,7 @@ def _assign_depth_based_overburden_to_all_areas(
 
     # Confirm load pattern creation (log ret)
     try:
-        ret_lp = model.LoadPatterns.Add(load_pattern, 1, 0.0)
+        ret_lp = model.LoadPatterns.Add(load_pattern, 8, 0.0)
         _log("[DEBUG] LoadPatterns.Add:", load_pattern, "ret=", ret_lp)
     except Exception as e:
         _log("[DEBUG] LoadPatterns.Add EXC:", load_pattern, "err=", repr(e))
