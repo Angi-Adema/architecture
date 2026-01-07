@@ -982,11 +982,16 @@ def _sap_results_header(out):
     return (None, 0, None)
 
 
-def _collect_joint_displacements(model, node_names, case="Dead"):
+def _collect_joint_displacements_per_node(model, node_names, case="Dead"):
     rows = []
     _select_case(model, case)
 
+    # de-dupe node list (prevents accidental repeats)
+    seen = set()
+    node_names = [n for n in node_names if not (str(n) in seen or seen.add(str(n)))]
+
     def _call_jointdispl(nm):
+        # ItemTypeElm = 0 (ObjectElm) is correct for a single joint name
         try:
             return model.Results.JointDispl(str(nm), 0)
         except Exception:
@@ -998,32 +1003,55 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
         except Exception:
             continue
 
-        if not isinstance(out, (list, tuple)) or len(out) < 13:
+        if not isinstance(out, (list, tuple)) or len(out) < 10:
             continue
 
-        ret, n, base = _sap_results_header(out)
-        if base is None or n <= 0:
+        ret, n_header, base = _sap_results_header(out)
+        if base is None:
+            continue
+
+        # --- IMPORTANT: infer n from actual array length, not header ---
+        # Obj should be the first array at out[base+0]
+        obj_raw = out[base + 0] if (len(out) > base + 0) else None
+        try:
+            n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+        except Exception:
+            n_actual = 0
+
+        # pick the most trustworthy n
+        n = int(n_actual or (n_header or 0))
+        if n <= 0:
             continue
 
         # Layout starting at base:
-        # Obj, Elm, LoadCase, StepType, StepNum, U1, U2, U3, R1, R2, R3
         Obj      = _as_seq(out[base + 0], n)
-        Elm      = _as_seq(out[base + 1], n)
-        LoadCase = _as_seq(out[base + 2], n)
-        StepType = _as_seq(out[base + 3], n)
-        StepNum  = _as_seq(out[base + 4], n)
+        Elm      = _as_seq(out[base + 1], n) if len(out) > base + 1 else [None] * n
+        LoadCase = _as_seq(out[base + 2], n) if len(out) > base + 2 else [None] * n
+        StepType = _as_seq(out[base + 3], n) if len(out) > base + 3 else [None] * n
+        StepNum  = _as_seq(out[base + 4], n) if len(out) > base + 4 else [None] * n
 
-        U1 = _as_seq(out[base + 5],  n)
-        U2 = _as_seq(out[base + 6],  n)
-        U3 = _as_seq(out[base + 7],  n)
-        R1 = _as_seq(out[base + 8],  n)
-        R2 = _as_seq(out[base + 9],  n)
-        R3 = _as_seq(out[base + 10], n)
+        U1 = _as_seq(out[base + 5],  n) if len(out) > base + 5 else [None] * n
+        U2 = _as_seq(out[base + 6],  n) if len(out) > base + 6 else [None] * n
+        U3 = _as_seq(out[base + 7],  n) if len(out) > base + 7 else [None] * n
+        R1 = _as_seq(out[base + 8],  n) if len(out) > base + 8 else [None] * n
+        R2 = _as_seq(out[base + 9],  n) if len(out) > base + 9 else [None] * n
+        R3 = _as_seq(out[base + 10], n) if len(out) > base + 10 else [None] * n
 
+        # --- IMPORTANT: only keep rows that match the joint we asked for ---
+        asked = str(nname).strip()
         for i in range(n):
+            obj_i = str(Obj[i]).strip()
+            if obj_i != asked:
+                continue
+
+            # also keep only the selected case name if it exists in results
+            lc = str(LoadCase[i]).strip()
+            if lc and case and lc != str(case):
+                continue
+
             rows.append({
-                "Node": str(Obj[i]),
-                "Case": str(LoadCase[i]),
+                "Node": obj_i,
+                "Case": lc,
                 "StepType": str(StepType[i]),
                 "StepNum": StepNum[i],
                 "UX": U1[i], "UY": U2[i], "UZ": U3[i],
@@ -1031,6 +1059,88 @@ def _collect_joint_displacements(model, node_names, case="Dead"):
             })
 
     return pd.DataFrame(rows)
+
+def _collect_joint_displacements(model, node_names=None, case="Dead"):
+    """
+    FAST + NO DUPES:
+    Calls JointDispl ONE time (global query) and returns one row per (Node, Case, StepType, StepNum).
+    Optionally filters down to node_names if provided.
+    """
+    _select_case(model, case)
+
+    # ---- Call ONCE: global joint displacements ----
+    out = None
+    for args in ((0,), (0, str(case))):
+        try:
+            out = model.Results.JointDispl(*args)
+            break
+        except Exception:
+            continue
+
+    if not isinstance(out, (list, tuple)) or len(out) < 10:
+        return pd.DataFrame()
+
+    ret, n_header, base = _sap_results_header(out)
+    if base is None:
+        return pd.DataFrame()
+
+    # Infer n from actual array lengths (don’t trust header blindly)
+    obj_raw = out[base + 0] if len(out) > base + 0 else None
+    try:
+        n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+    except Exception:
+        n_actual = 0
+
+    n = int(n_actual or (n_header or 0))
+    if n <= 0:
+        return pd.DataFrame()
+
+    Obj      = _as_seq(out[base + 0],  n)
+    Elm      = _as_seq(out[base + 1],  n) if len(out) > base + 1 else [None] * n
+    LoadCase = _as_seq(out[base + 2],  n) if len(out) > base + 2 else [None] * n
+    StepType = _as_seq(out[base + 3],  n) if len(out) > base + 3 else [None] * n
+    StepNum  = _as_seq(out[base + 4],  n) if len(out) > base + 4 else [None] * n
+
+    U1 = _as_seq(out[base + 5],  n) if len(out) > base + 5 else [None] * n
+    U2 = _as_seq(out[base + 6],  n) if len(out) > base + 6 else [None] * n
+    U3 = _as_seq(out[base + 7],  n) if len(out) > base + 7 else [None] * n
+    R1 = _as_seq(out[base + 8],  n) if len(out) > base + 8 else [None] * n
+    R2 = _as_seq(out[base + 9],  n) if len(out) > base + 9 else [None] * n
+    R3 = _as_seq(out[base + 10], n) if len(out) > base + 10 else [None] * n
+
+    # Optional filter set (fast membership)
+    keep = None
+    if node_names is not None:
+        keep = set(str(x).strip() for x in node_names)
+
+    rows = []
+    for i in range(n):
+        node = str(Obj[i]).strip()
+        if not node:
+            continue
+        if keep is not None and node not in keep:
+            continue
+
+        lc = str(LoadCase[i]).strip()
+        if case and lc and lc != str(case):
+            continue
+
+        rows.append({
+            "Node": node,
+            "Case": lc,
+            "StepType": str(StepType[i]).strip(),
+            "StepNum": StepNum[i],
+            "UX": U1[i], "UY": U2[i], "UZ": U3[i],
+            "RX": R1[i], "RY": R2[i], "RZ": R3[i],
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    # Hard de-dupe: keep only unique result rows
+    df = df.drop_duplicates(subset=["Node", "Case", "StepType", "StepNum"], keep="last").reset_index(drop=True)
+    return df
 
 
 def _collect_frame_end_forces(model, frame_names, case="Dead"):
@@ -1775,15 +1885,23 @@ def sweep_soil_pressure_by_depth(
         _run_analysis(model)
 
         node_names = [n for (n, _, _, _) in joints]
+
         try:
             disp_df = _collect_joint_displacements(model, node_names, case=results_case_name)
+
         except Exception:
             disp_df = _collect_joint_displacements(model, node_names, case="Dead")
 
+        _log("[DEBUG] JointDispl rows:", 0 if disp_df is None else len(disp_df))
+
         force_df = pd.DataFrame()
+
+        if disp_df is None:
+            disp_df = pd.DataFrame()
 
         disp_df.insert(0, "Depth_m", d)
         disp_df.insert(1, "Multiplier", multiplier)
+        
         if not force_df.empty:
             force_df.insert(0, "Depth_m", d)
             force_df.insert(1, "Multiplier", multiplier)
@@ -2416,6 +2534,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         import traceback
         try:
             disp_df = _collect_joint_displacements(model, node_names, "Dead")
+
+            _log("[DEBUG] JointDispl rows:", 0 if disp_df is None else len(disp_df))
+
             force_df = _collect_frame_end_forces(model, frame_names, "Dead") if frame_names else pd.DataFrame()
         except Exception:
             _log("[Error] While collecting results:")
@@ -2427,6 +2548,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         if soil_meta and soil_meta.get("overburden", {}).get("assigned_areas", 0) > 0:
             try:
                 soil_disp_df = _collect_joint_displacements(model, node_names, SOIL_CASE_NAME)
+
+                _log("[DEBUG] SOIL JointDispl rows:", 0 if soil_disp_df is None else len(soil_disp_df))
+
             except Exception:
                 soil_disp_df = pd.DataFrame()
 
@@ -2454,22 +2578,28 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         MAX_EXCEL_ROWS = 1_048_576
         MAX_EXCEL_DATA_ROWS = MAX_EXCEL_ROWS - 1  # leave 1 row for headers
 
-        def _write_df_safe(df, sheet_name, xlw, base_path):
-            """
-            Writes df to Excel if it fits. If too large, writes CSV instead.
-            Returns: "excel" or "csv" or "skip"
-            """
+        def _write_df_excel_only(df, sheet_name, xlw):
             if df is None or df.empty:
                 return "skip"
 
-            if len(df) > MAX_EXCEL_DATA_ROWS:
-                csv_path = f"{base_path}_{sheet_name}.csv"
-                df.to_csv(csv_path, index=False)
-                _log(f"[DEBUG] {sheet_name} too large for Excel ({len(df)} rows). Wrote CSV:", csv_path)
-                return "csv"
+            MAX_EXCEL_ROWS = 1_048_576
+            MAX_DATA_ROWS = MAX_EXCEL_ROWS - 1  # header row
 
-            df.to_excel(xlw, sheet_name=sheet_name, index=False)
-            return "excel"
+            if len(df) <= MAX_DATA_ROWS:
+                df.to_excel(xlw, sheet_name=sheet_name, index=False)
+                return "excel"
+
+            # Split into chunks across sheets
+            start = 0
+            part = 1
+            while start < len(df):
+                end = min(start + MAX_DATA_ROWS, len(df))
+                chunk = df.iloc[start:end].copy()
+                chunk.to_excel(xlw, sheet_name=f"{sheet_name}_{part}", index=False)
+                part += 1
+                start = end
+
+            return "excel_split"
 
         with pd.ExcelWriter(results_xlsx, engine="xlsxwriter") as xlw:
             # ---- Shell extrema summary (M11, V13, Fmax, Fmin) ----
@@ -2491,7 +2621,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 _settlement_mm_from_displacements(disp_df, keys["corners"], vertical_axis=vaxis).assign(Group="Corners"),
             ], ignore_index=True)
 
-            _write_df_safe(settle_dead, "Settlement_Dead_mm", xlw, base)
+            _write_df_excel_only(settle_dead, "Settlement_Dead_mm", xlw)
 
             if soil and (soil_disp_df is not None) and (not soil_disp_df.empty):
                 settle_soil = pd.concat([
@@ -2500,17 +2630,17 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     _settlement_mm_from_displacements(soil_disp_df, keys["corners"], vertical_axis=vaxis).assign(Group="Corners"),
                 ], ignore_index=True)
 
-                _write_df_safe(settle_soil, "Settlement_Soil_mm", xlw, base)
+                _write_df_excel_only(settle_soil, "Settlement_Soil_mm", xlw)
 
-            _write_df_safe(nodes, "Nodes", xlw, base)
-            _write_df_safe(elems, "Elements", xlw, base)
-            _write_df_safe(areas, "Areas", xlw, base)
+            _write_df_excel_only(nodes, "Nodes", xlw)
+            _write_df_excel_only(elems, "Elements", xlw)
+            _write_df_excel_only(areas, "Areas", xlw)
 
-            _write_df_safe(disp_df, "JointDisplacements", xlw, base)
-            _write_df_safe(soil_disp_df, "Soil_JointDisplacements", xlw, base)
-            _write_df_safe(force_df, "FrameEndForces", xlw, base)
-            _write_df_safe(shell_dead_df, "ShellResults_Dead", xlw, base)
-            _write_df_safe(shell_soil_df, "ShellResults_Soil", xlw, base)
+            _write_df_excel_only(disp_df, "JointDisplacements", xlw)
+            _write_df_excel_only(soil_disp_df, "Soil_JointDisplacements", xlw)
+            _write_df_excel_only(force_df, "FrameEndForces", xlw)
+            _write_df_excel_only(shell_dead_df, "ShellResults_Dead", xlw)
+            _write_df_excel_only(shell_soil_df, "ShellResults_Soil", xlw)
 
             # Optional: dump soil_meta for debugging
             if soil_meta:
@@ -2560,7 +2690,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     if ddf is None or ddf.empty:
                         continue
                     dtag = f"d{str(depth_val).replace('.', '_')}"
-                    _write_df_safe(ddf, f"SoilDisp_{dtag}", xlw, base)
+                    _write_df_excel_only(ddf, f"SoilDisp_{dtag}", xlw)
 
         num_areas = 0 if areas is None else len(areas)
 
