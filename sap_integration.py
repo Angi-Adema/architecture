@@ -1062,17 +1062,14 @@ def _collect_joint_displacements_per_node(model, node_names, case="Dead"):
 
 def _collect_joint_displacements(model, node_names=None, case="Dead"):
     """
-    FAST + NO DUPES:
-    Calls JointDispl ONE time (global query) and returns one row per (Node, Case, StepType, StepNum).
-    Optionally filters down to node_names if provided.
+    Robust collector:
+    1) Try single-call "all joints" query (fast)
+    2) If it returns zero, fall back to per-joint calls (slow but reliable)
     """
     _select_case(model, case)
 
-    # ---- Call ONCE: request all joints (SAP expects a name first) ----
+    # ---------- Attempt 1: single-call ----------
     out = None
-
-    # Most SAP builds accept blank "" to mean "all objects" when ItemTypeElm=0
-    # Some accept "ALL" explicitly. Try both.
     for joint_name in ("", "ALL"):
         try:
             out = model.Results.JointDispl(str(joint_name), 0)
@@ -1080,71 +1077,75 @@ def _collect_joint_displacements(model, node_names=None, case="Dead"):
         except Exception:
             continue
 
-    # If still None, give up safely
-    if out is None:
-        return pd.DataFrame()
+    def _parse_jointdispl_out(out_obj):
+        if not isinstance(out_obj, (list, tuple)):
+            return pd.DataFrame()
 
-    ret, n_header, base = _sap_results_header(out)
-    if base is None:
-        return pd.DataFrame()
+        ret, n_header, base = _sap_results_header(out_obj)
+        if base is None:
+            return pd.DataFrame()
 
-    # Infer n from actual array lengths (don’t trust header blindly)
-    obj_raw = out[base + 0] if len(out) > base + 0 else None
-    try:
-        n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
-    except Exception:
-        n_actual = 0
+        obj_raw = out_obj[base + 0] if len(out_obj) > base + 0 else None
+        try:
+            n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+        except Exception:
+            n_actual = 0
 
-    n = int(n_actual or (n_header or 0))
-    if n <= 0:
-        return pd.DataFrame()
+        n = int(n_actual or (n_header or 0))
+        if n <= 0:
+            return pd.DataFrame()
 
-    Obj      = _as_seq(out[base + 0],  n)
-    Elm      = _as_seq(out[base + 1],  n) if len(out) > base + 1 else [None] * n
-    LoadCase = _as_seq(out[base + 2],  n) if len(out) > base + 2 else [None] * n
-    StepType = _as_seq(out[base + 3],  n) if len(out) > base + 3 else [None] * n
-    StepNum  = _as_seq(out[base + 4],  n) if len(out) > base + 4 else [None] * n
+        Obj      = _as_seq(out_obj[base + 0],  n)
+        LoadCase = _as_seq(out_obj[base + 2],  n) if len(out_obj) > base + 2 else [None] * n
+        StepType = _as_seq(out_obj[base + 3],  n) if len(out_obj) > base + 3 else [None] * n
+        StepNum  = _as_seq(out_obj[base + 4],  n) if len(out_obj) > base + 4 else [None] * n
 
-    U1 = _as_seq(out[base + 5],  n) if len(out) > base + 5 else [None] * n
-    U2 = _as_seq(out[base + 6],  n) if len(out) > base + 6 else [None] * n
-    U3 = _as_seq(out[base + 7],  n) if len(out) > base + 7 else [None] * n
-    R1 = _as_seq(out[base + 8],  n) if len(out) > base + 8 else [None] * n
-    R2 = _as_seq(out[base + 9],  n) if len(out) > base + 9 else [None] * n
-    R3 = _as_seq(out[base + 10], n) if len(out) > base + 10 else [None] * n
+        U1 = _as_seq(out_obj[base + 5],  n) if len(out_obj) > base + 5 else [None] * n
+        U2 = _as_seq(out_obj[base + 6],  n) if len(out_obj) > base + 6 else [None] * n
+        U3 = _as_seq(out_obj[base + 7],  n) if len(out_obj) > base + 7 else [None] * n
+        R1 = _as_seq(out_obj[base + 8],  n) if len(out_obj) > base + 8 else [None] * n
+        R2 = _as_seq(out_obj[base + 9],  n) if len(out_obj) > base + 9 else [None] * n
+        R3 = _as_seq(out_obj[base + 10], n) if len(out_obj) > base + 10 else [None] * n
 
-    # Optional filter set (fast membership)
-    keep = None
-    if node_names is not None:
-        keep = set(str(x).strip() for x in node_names)
+        keep = None
+        if node_names is not None:
+            keep = set(str(x).strip() for x in node_names)
 
-    rows = []
-    for i in range(n):
-        node = str(Obj[i]).strip()
-        if not node:
-            continue
-        if keep is not None and node not in keep:
-            continue
+        rows = []
+        for i in range(n):
+            node = str(Obj[i]).strip()
+            if not node:
+                continue
+            if keep is not None and node not in keep:
+                continue
 
-        lc = str(LoadCase[i]).strip()
-        if case and lc and lc != str(case):
-            continue
+            lc = str(LoadCase[i]).strip()
+            if case and lc and lc != str(case):
+                continue
 
-        rows.append({
-            "Node": node,
-            "Case": lc,
-            "StepType": str(StepType[i]).strip(),
-            "StepNum": StepNum[i],
-            "UX": U1[i], "UY": U2[i], "UZ": U3[i],
-            "RX": R1[i], "RY": R2[i], "RZ": R3[i],
-        })
+            rows.append({
+                "Node": node,
+                "Case": lc,
+                "StepType": str(StepType[i]).strip(),
+                "StepNum": StepNum[i],
+                "UX": U1[i], "UY": U2[i], "UZ": U3[i],
+                "RX": R1[i], "RY": R2[i], "RZ": R3[i],
+            })
 
-    df = pd.DataFrame(rows)
-    if df.empty:
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.drop_duplicates(subset=["Node", "Case", "StepType", "StepNum"], keep="last").reset_index(drop=True)
         return df
 
-    # Hard de-dupe: keep only unique result rows
-    df = df.drop_duplicates(subset=["Node", "Case", "StepType", "StepNum"], keep="last").reset_index(drop=True)
-    return df
+    df = _parse_jointdispl_out(out) if out is not None else pd.DataFrame()
+    if not df.empty:
+        return df
+
+    # ---------- Attempt 2: fallback per-joint ----------
+    if node_names is None:
+        node_names = _get_all_point_names(model)
+
+    return _collect_joint_displacements_per_node(model, node_names, case=case)
 
 
 def _collect_frame_end_forces(model, frame_names, case="Dead"):
@@ -1202,29 +1203,22 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
     return pd.DataFrame(rows)
 
 def _collect_shell_forces_moments(model, area_names, case="Dead"):
-    """
-    Collect shell forces/moments for SAP2000 area objects.
-
-    IMPORTANT:
-      Many SAP2000 builds do NOT accept `case` as a parameter in AreaForceShell/ShellForce.
-      The case must be selected via Results.Setup first, then call the API without case.
-    """
     rows = []
     _select_case(model, case)
 
     ITEMTYPE_CANDIDATES = (1, 0)  # 1=Element(mesh), 0=Object
     api_methods = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
 
-    # keep logs short
     fail_logs_left = 6
     ok_logs_left = 3
     best_itemtype_seen = None
 
+    dbg_print_left = 5  # print raw head/tail for first 5 areas we successfully call
+
     def _try_call(fn, area_name, item_type):
         nonlocal fail_logs_left, ok_logs_left
-        # Try WITHOUT case first (most common)
         for args in ((str(area_name), int(item_type)),
-                     (str(area_name), int(item_type), str(case))):  # fallback only
+                     (str(area_name), int(item_type), str(case))):
             try:
                 out = fn(*args)
                 if ok_logs_left > 0:
@@ -1238,7 +1232,6 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
                     _log("[DEBUG] Shell probe fail:", "case=", case, "area=", area_name,
                          "fn=", fn.__name__, "args=", args, "err=", repr(e))
                     fail_logs_left -= 1
-                continue
         return None
 
     def _nres(out):
@@ -1250,39 +1243,56 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
         used_itemtype = None
         used_api = None
 
+        # ---- find first callable API that returns something ----
         for it in ITEMTYPE_CANDIDATES:
             for mname in api_methods:
                 fn = getattr(model.Results, mname, None)
                 if fn is None:
                     continue
+
                 out_try = _try_call(fn, an, it)
                 if out_try is None:
                     continue
-                if _nres(out_try) > 0:
-                    out = out_try
-                    used_itemtype = it
-                    used_api = mname
-                    best_itemtype_seen = it
-                    break
+
+                out = out_try
+                used_itemtype = it
+                used_api = mname
+                best_itemtype_seen = it
+                break
+
             if out is not None:
                 break
 
         if out is None:
             continue
 
+        # ---- DEBUG: show the *actual* shape we're getting ----
+        if DEBUG and dbg_print_left > 0:
+            try:
+                _log("[DEBUG] AreaForceShell raw head:", repr(out[:6]))
+                _log("[DEBUG] AreaForceShell raw tail:", repr(out[-6:]))
+                _log("[DEBUG] AreaForceShell types head:", [type(x).__name__ for x in out[:6]])
+                _log("[DEBUG] AreaForceShell types tail:", [type(x).__name__ for x in out[-6:]])
+            except Exception as e:
+                _log("[DEBUG] AreaForceShell debug print failed:", repr(e))
+            dbg_print_left -= 1
+
+        # ---- NOW attempt normal parsing ----
         try:
             nres = _nres(out)
+
+            # IMPORTANT: for now, DON'T skip silently if nres==0.
+            # Log it so we can fix the header parser.
             if nres <= 0:
+                if DEBUG:
+                    _log("[DEBUG] AreaForceShell nres=0 (header parse likely wrong). area=", an,
+                         "api=", used_api, "itemtype=", used_itemtype)
                 continue
 
-            # Typical layout:
-            # ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
             ret, nres, base = _sap_results_header(out)
             if base is None or nres <= 0:
                 continue
 
-            # Expected starting at base:
-            # Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
             Obj      = _as_seq(out[base + 0],  nres)
             Elm      = _as_seq(out[base + 1],  nres)
             LoadCase = _as_seq(out[base + 2],  nres)
@@ -1300,7 +1310,6 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 
             for i in range(nres):
                 f11 = float(F11[i]); f22 = float(F22[i]); f12 = float(F12[i])
-
                 avg = 0.5 * (f11 + f22)
                 rad = ((0.5 * (f11 - f22)) ** 2 + (f12 ** 2)) ** 0.5
                 fmax = avg + rad
@@ -1319,7 +1328,10 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
                     "ItemTypeUsed": used_itemtype,
                     "APIUsed": used_api,
                 })
-        except Exception:
+
+        except Exception as e:
+            if DEBUG:
+                _log("[DEBUG] Shell parse exception:", "area=", an, "api=", used_api, "err=", repr(e))
             continue
 
     df = pd.DataFrame(rows)
@@ -1328,7 +1340,6 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
          "unique_areas=", (0 if df.empty else df["Area"].nunique()),
          "best_itemtype=", best_itemtype_seen)
     return df
-
 
 def _extrema_summary(shell_df, label):
     if shell_df is None or shell_df.empty:
