@@ -10,7 +10,6 @@ import json
 import os
 import math
 import re
-from xml.parsers.expat import model
 import pandas as pd
 import comtypes.client as cc
 import numpy as np
@@ -279,14 +278,16 @@ def _as_seq(x, n):
     return seq
 
 
-def _select_case(model, case):
+def _select_case(model, case, reset=False):
     try:
-        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-        model.Results.Setup.SetCaseSelectedForOutput(case)
-        model.Results.Setup.SetOptionMode(0)  # 0 = use current selection, if available
-    except Exception:
-        pass
-
+        if reset:
+            model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+        model.Results.Setup.SetCaseSelectedForOutput(str(case))
+        model.Results.Setup.SetOptionMode(0)
+        return True
+    except Exception as e:
+        _log("[DEBUG] _select_case failed:", "case=", case, "reset=", reset, "err=", repr(e))
+        return False
 
 def _find_sap_paths():
     exe_path, tlb_path = None, None
@@ -934,7 +935,7 @@ def _run_analysis(model):
 
             # Select ONLY the cases you will query
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
-            model.Results.Setup.SetCaseSelectedForOutput("SOIL_CASE")
+            model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE_NAME)
 
             res = model.Results.Setup.GetCaseSelectedForOutput()
             _log("[DEBUG] Cases selected for output:", repr(res))
@@ -2734,8 +2735,41 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         shell_soil_df = pd.DataFrame()
 
         if area_names:
+            # ================= DEAD shell results =================
+            try:
+                model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+                model.Results.Setup.SetCaseSelectedForOutput("Dead")
+                model.Results.Setup.SetOptionMode(0)
+
+                # 🔍 DEBUG: confirm selection state
+                try:
+                    sel = model.Results.Setup.GetCaseSelectedForOutput()
+                    _log("[DEBUG] Currently selected for SHELL DEAD output:", repr(sel))
+                except Exception as e:
+                    _log("[DEBUG] GetCaseSelectedForOutput (SHELL DEAD) failed:", repr(e))
+
+            except Exception as e:
+                _log("[DEBUG] Selecting Dead for shell output failed:", repr(e))
+
             shell_dead_df = _collect_shell_forces_moments(model, area_names, case="Dead")
+
+            # ================= SOIL shell results =================
             if soil:
+                try:
+                    model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+                    model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE_NAME)
+                    model.Results.Setup.SetOptionMode(0)
+
+                    # 🔍 DEBUG: confirm selection state
+                    try:
+                        sel = model.Results.Setup.GetCaseSelectedForOutput()
+                        _log("[DEBUG] Currently selected for SHELL SOIL output:", repr(sel))
+                    except Exception as e:
+                        _log("[DEBUG] GetCaseSelectedForOutput (SHELL SOIL) failed:", repr(e))
+
+                except Exception as e:
+                    _log("[DEBUG] Selecting SOIL_CASE for shell output failed:", repr(e))
+
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
 
         _log(
