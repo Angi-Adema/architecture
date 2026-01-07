@@ -2492,6 +2492,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             _log("[DEBUG] SAP area objects (live):", len(area_live))
             _log("[DEBUG] First 10 SAP area names:", area_live[:10])
 
+            # 🔎 NEW: verify the first few areas actually have a shell property
+            for an in area_live[:5]:
+                try:
+                    res = model.AreaObj.GetProperty(str(an))
+                    _log("[DEBUG] AreaObj.GetProperty:", "area=", an, "res=", repr(res))
+                except Exception as e:
+                    _log("[DEBUG] AreaObj.GetProperty FAILED:", "area=", an, "err=", repr(e))
+
             # Orient area local axes...
             try:
                 nodes_tot = len(nodes_in)
