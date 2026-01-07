@@ -1221,7 +1221,9 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
     rows = []
     _select_case(model, case)
 
-    ITEMTYPE_CANDIDATES = (1, 0)  # 1=Element(mesh), 0=Object
+    # Prefer Object (0) first; if the model isn’t meshed the way we expect,
+    # itemtype=1 can return ret=0 but nres=0.
+    ITEMTYPE_CANDIDATES = (0, 1)  # 0=Object, 1=Element(mesh)
     api_methods = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
 
     fail_logs_left = 6
@@ -1237,28 +1239,51 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
             try:
                 out = fn(*args)
                 if ok_logs_left > 0:
-                    _log("[DEBUG] Shell probe ok:", "case=", case, "area=", area_name,
+                    _log("[DEBUG] Shell probe ok:",
+                         "case=", case, "area=", area_name,
                          "fn=", fn.__name__, "args=", args,
                          "out_len=", (len(out) if isinstance(out, (list, tuple)) else "n/a"))
                     ok_logs_left -= 1
                 return out
             except Exception as e:
                 if fail_logs_left > 0:
-                    _log("[DEBUG] Shell probe fail:", "case=", case, "area=", area_name,
-                         "fn=", fn.__name__, "args=", args, "err=", repr(e))
+                    _log("[DEBUG] Shell probe fail:",
+                         "case=", case, "area=", area_name,
+                         "fn=", fn.__name__, "args=", args,
+                         "err=", repr(e))
                     fail_logs_left -= 1
         return None
 
-    def _nres(out):
-        ret, n, base = _sap_results_header(out)
-        return int(n or 0)
+    def _infer_nres(out):
+        """
+        Infer nres robustly: prefer actual Obj-array length over header.
+        Returns (nres, ret, n_header, base)
+        """
+        ret, n_header, base = _sap_results_header(out)
+        if base is None:
+            return 0, ret, n_header, base
+
+        obj_raw = out[base + 0] if (isinstance(out, (list, tuple)) and len(out) > base + 0) else None
+        try:
+            n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+        except Exception:
+            n_actual = 0
+
+        nres = int(n_actual or (n_header or 0))
+        return nres, ret, n_header, base
+
+    # de-dupe area list (prevents accidental repeats)
+    seen = set()
+    area_names = [a for a in area_names if not (str(a) in seen or seen.add(str(a)))]
 
     for an in area_names:
         out = None
         used_itemtype = None
         used_api = None
+        used_base = None
+        used_nres = 0
 
-        # ---- find first callable API that returns something ----
+        # ---- find first API+itemtype combo that yields nres > 0 ----
         for it in ITEMTYPE_CANDIDATES:
             for mname in api_methods:
                 fn = getattr(model.Results, mname, None)
@@ -1269,9 +1294,23 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
                 if out_try is None:
                     continue
 
+                nres_try, ret_try, n_header_try, base_try = _infer_nres(out_try)
+
+                # ✅ IMPORTANT: do NOT accept “successful” calls that return 0 rows
+                if nres_try <= 0:
+                    if DEBUG:
+                        _log("[DEBUG] Shell probe empty:",
+                             "case=", case, "area=", an,
+                             "api=", mname, "itemtype=", it,
+                             "ret=", ret_try, "n_header=", n_header_try,
+                             "nres=", nres_try, "base=", base_try)
+                    continue
+
                 out = out_try
                 used_itemtype = it
                 used_api = mname
+                used_base = base_try
+                used_nres = nres_try
                 best_itemtype_seen = it
                 break
 
@@ -1281,24 +1320,26 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
         if out is None:
             continue
 
-        # ---- DEBUG: show the *actual* shape we're getting ----
+        # ---- DEBUG: show the *actual* shape we're getting (first few successes) ----
         if DEBUG and dbg_print_left > 0:
             try:
                 _log("[DEBUG] AreaForceShell raw head:", repr(out[:6]))
                 _log("[DEBUG] AreaForceShell raw tail:", repr(out[-6:]))
                 _log("[DEBUG] AreaForceShell types head:", [type(x).__name__ for x in out[:6]])
                 _log("[DEBUG] AreaForceShell types tail:", [type(x).__name__ for x in out[-6:]])
+                _log("[DEBUG] AreaForceShell chosen:", "area=", an, "api=", used_api,
+                     "itemtype=", used_itemtype, "nres=", used_nres, "base=", used_base)
             except Exception as e:
                 _log("[DEBUG] AreaForceShell debug print failed:", repr(e))
             dbg_print_left -= 1
 
-        # ---- NOW attempt normal parsing ----
+        # ---- Parse ----
         try:
+            # Recompute header/base (safe) and infer n again (robust)
             ret, n_header, base = _sap_results_header(out)
             if base is None:
                 continue
 
-            # trust actual Obj array length if present (more reliable than header n)
             obj_raw = out[base + 0] if len(out) > base + 0 else None
             try:
                 n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
@@ -1306,14 +1347,10 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
                 n_actual = 0
 
             nres = int(n_actual or (n_header or 0))
-
             if nres <= 0:
-                if DEBUG:
-                    _log("[DEBUG] AreaForceShell nres=0 (no rows). area=", an,
-                        "api=", used_api, "itemtype=", used_itemtype,
-                        "ret=", ret, "n_header=", n_header, "n_actual=", n_actual, "base=", base)
                 continue
 
+            # Layout starting at base:
             Obj      = _as_seq(out[base + 0],  nres)
             Elm      = _as_seq(out[base + 1],  nres)
             LoadCase = _as_seq(out[base + 2],  nres)
@@ -1329,7 +1366,14 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
             V13 = _as_seq(out[base + 11], nres)
             V23 = _as_seq(out[base + 12], nres)
 
+            asked_case = str(case).strip()
+
             for i in range(nres):
+                # Optional case filter (helps if API returns multiple cases)
+                lc = str(LoadCase[i]).strip()
+                if asked_case and lc and lc != asked_case:
+                    continue
+
                 f11 = float(F11[i]); f22 = float(F22[i]); f12 = float(F12[i])
                 avg = 0.5 * (f11 + f22)
                 rad = ((0.5 * (f11 - f22)) ** 2 + (f12 ** 2)) ** 0.5
@@ -1339,7 +1383,7 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
                 rows.append({
                     "Area": str(Obj[i]),
                     "Elm": str(Elm[i]),
-                    "Case": str(LoadCase[i]),
+                    "Case": lc,
                     "StepType": str(StepType[i]),
                     "StepNum": StepNum[i],
                     "F11": f11, "F22": f22, "F12": f12,
@@ -1352,11 +1396,15 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 
         except Exception as e:
             if DEBUG:
-                _log("[DEBUG] Shell parse exception:", "area=", an, "api=", used_api, "err=", repr(e))
+                _log("[DEBUG] Shell parse exception:",
+                     "case=", case, "area=", an,
+                     "api=", used_api, "itemtype=", used_itemtype,
+                     "err=", repr(e))
             continue
 
     df = pd.DataFrame(rows)
-    _log("[DEBUG] Shell collect done:", "case=", case,
+    _log("[DEBUG] Shell collect done:",
+         "case=", case,
          "rows=", len(df),
          "unique_areas=", (0 if df.empty else df["Area"].nunique()),
          "best_itemtype=", best_itemtype_seen)
