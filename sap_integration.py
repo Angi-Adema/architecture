@@ -748,74 +748,69 @@ def _build_model_from_excel(model, nodes_df, elems_df,
             except Exception:
                 pass
 
-
-def _build_areas_from_excel(model, areas_df,
-                            default_section=("SHELL_200", "CONC40", 0.20)):
-    """
-    Creates area (shell) objects by named joints:
-      - Triangles: P1,P2,P3 (P4 is None/blank)
-      - Quads:     P1,P2,P3,P4
-
-    Excel 'Areas' sheet columns (no headers):
-      0: AreaName
-      1: P1   2: P2   3: P3   4: P4(optional)
-      5: Section(optional)   6: Material(optional)
-    """
+def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC40", 0.20)):
     sec_name, mat_name, thick_m = default_section
     area = model.AreaObj
 
-    try:
-        model.PropMaterial.SetMaterial(mat_name, 2)
-    except Exception:
-        pass
-    try:
-        model.PropArea.SetShell(sec_name, mat_name, float(thick_m))
-    except Exception:
+    def _ensure_material(mat: str):
         try:
-            model.PropArea.SetShell_1(sec_name, mat_name, float(thick_m))
-        except Exception:
-            pass
+            # 2 is typically concrete in CSI material type enums (varies by API build)
+            model.PropMaterial.SetMaterial(mat, 2)
+        except Exception as e:
+            raise RuntimeError(f"Failed to define material '{mat}': {repr(e)}")
 
-    for _, r in areas_df.iterrows():
-        name = str(r["Area"])
-        p1 = str(r["P1"])
-        p2 = str(r["P2"])
-        p3 = str(r["P3"])
+    def _ensure_shell_prop(sec: str, mat: str, t: float):
+        # Try both API variants, but DO NOT silently ignore failures.
+        try:
+            model.PropArea.SetShell(sec, mat, float(t))
+            return
+        except Exception as e1:
+            try:
+                model.PropArea.SetShell_1(sec, mat, float(t))
+                return
+            except Exception as e2:
+                raise RuntimeError(
+                    f"Failed to define shell property sec='{sec}' mat='{mat}' t={t}. "
+                    f"SetShell err={repr(e1)} ; SetShell_1 err={repr(e2)}"
+                )
+
+    # Ensure the default baseline exists
+    _ensure_material(mat_name)
+    _ensure_shell_prop(sec_name, mat_name, float(thick_m))
+
+    for i, (_, r) in enumerate(areas_df.iterrows()):
+        name = str(r["Area"]).strip()
+        p1 = str(r["P1"]).strip()
+        p2 = str(r["P2"]).strip()
+        p3 = str(r["P3"]).strip()
         p4 = r["P4"]
 
-        sec = str(r["Section"]) if pd.notna(r["Section"]) else sec_name
-        mat = str(r["Material"]) if pd.notna(r["Material"]) else mat_name
+        sec = str(r["Section"]).strip() if pd.notna(r["Section"]) else sec_name
+        mat = str(r["Material"]).strip() if pd.notna(r["Material"]) else mat_name
 
+        # If the row requests a material, ensure it exists
         if pd.notna(r["Material"]):
-            try:
-                model.PropMaterial.SetMaterial(mat, _mat_code_from_name(mat))
-            except Exception:
-                pass
+            _ensure_material(mat)
 
-        try:
-            model.PropArea.SetShell(sec, mat, float(thick_m))
-        except Exception:
-            try:
-                model.PropArea.SetShell_1(sec, mat, float(thick_m))
-            except Exception:
-                pass
+        # Ensure the requested shell property exists
+        _ensure_shell_prop(sec, mat, float(thick_m))
 
-        if p4 is None or (isinstance(p4, float) and pd.isna(p4)) or str(p4) == "":
+        # Points
+        if p4 is None or (isinstance(p4, float) and pd.isna(p4)) or str(p4).strip() == "":
             point_names = [p1, p2, p3]
         else:
-            p4 = str(p4)
-            point_names = [p1, p2, p3, p4]
+            point_names = [p1, p2, p3, str(p4).strip()]
 
         n_pts = len(point_names)
 
         created_name = name
         created = False
-        for meth in ("AddByPoint", "AddByPoint_1", "AddByPoint_2"):
-            try:
-                m = getattr(area, meth)
-            except AttributeError:
-                continue
+        last_err = None
 
+        for meth in ("AddByPoint", "AddByPoint_1", "AddByPoint_2"):
+            m = getattr(area, meth, None)
+            if m is None:
+                continue
             try:
                 ret = m(n_pts, point_names, created_name, sec, "Global")
                 created = True
@@ -825,18 +820,30 @@ def _build_areas_from_excel(model, areas_df,
                     ret = m(n_pts, point_names, created_name)
                     created = True
                     break
-                except Exception:
-                    continue
-            except Exception:
-                continue
+                except Exception as e:
+                    last_err = e
+            except Exception as e:
+                last_err = e
 
         if not created:
-            raise RuntimeError(f"Failed to create area {name} ({','.join(point_names)}) via AddByPoint variants.")
+            raise RuntimeError(
+                f"Failed to create area '{name}' with points {point_names}. Last err={repr(last_err)}"
+            )
 
+        # CRITICAL: Assign the property to the area (do not swallow)
         try:
             area.SetProperty(created_name, sec)
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                f"Area '{created_name}' created but SetProperty failed for sec='{sec}'. err={repr(e)}"
+            )
+        
+        if i < 5:
+            try:
+                prop = model.AreaObj.GetProperty(str(created_name))
+                _log("[DEBUG] Area property confirmed:", created_name, prop)
+            except Exception as e:
+                _log("[DEBUG] AreaObj.GetProperty FAILED:", created_name, repr(e))
 
 
 def _fix_base_nodes(model, nodes_df, tol=1e-3, fix=(1, 1, 1, 1, 1, 1)):
