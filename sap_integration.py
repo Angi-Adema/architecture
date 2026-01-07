@@ -763,74 +763,73 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
     def _ensure_shell_prop(sec: str, mat: str, t: float):
         """
         SAP2000 COM builds differ in PropArea.SetShell signature.
-        Some builds expect arg2 to be an integer ShellType enum.
+        Some builds expect arg2 = ShellType (int), and thickness may not be 5th.
+        We'll brute-force the common variants.
         """
-        last = None
+        import ctypes
 
-        # Candidate shell type enums to try (thin/thick/membrane variants differ by build)
+        last = None
         shell_types = [0, 1, 2, 3, 4]
 
-        def _is_signature_mismatch(e: Exception) -> bool:
-            return isinstance(e, (TypeError, ValueError, ctypes.ArgumentError))
+        def sig_mismatch(e: Exception) -> bool:
+            return isinstance(e, (TypeError, ctypes.ArgumentError))
 
-        # --- Try SetShell ---
-        for args in (
-            # Common newer: (Name, MatProp, MatAng, Thickness, Color, Notes, GUID)
-            (sec, mat, 0.0, float(t), 0, "", ""),
-            (sec, mat, 0.0, float(t)),
-        ):
+        def try_call(fn_name: str, args):
+            nonlocal last
+            fn = getattr(model.PropArea, fn_name, None)
+            if fn is None:
+                return False
             try:
-                model.PropArea.SetShell(*args)
-                return
+                fn(*args)
+                _log("[DEBUG] ShellProp OK via", fn_name, "args=", args)
+                return True
             except Exception as e:
-                if _is_signature_mismatch(e):
-                    last = ("SetShell", args, e)
-                else:
-                    raise RuntimeError(f"SetShell failed (not signature): {repr(e)}")
+                if sig_mismatch(e):
+                    last = (fn_name, args, e)
+                    return False
+                # Real failure (not signature): surface it immediately
+                raise RuntimeError(f"{fn_name} failed (not signature): args={args} err={repr(e)}")
 
-        # --- Try SetShell where arg2 is ShellType (int) ---
-        for st in shell_types:
-            for args in (
-                # Likely: (Name, ShellType, MatProp, MatAng, Thickness, Color, Notes, GUID)
-                (sec, int(st), mat, 0.0, float(t), 0, "", ""),
-                (sec, int(st), mat, 0.0, float(t)),
-            ):
-                try:
-                    model.PropArea.SetShell(*args)
+        # We will try both SetShell and SetShell_1
+        fns = ["SetShell", "SetShell_1"]
+
+        # ---------- A) Variants where arg2 is material (older/newer simple builds) ----------
+        for fn in fns:
+            candidates = [
+                (sec, mat, 0.0, float(t), 0, "", ""),   # (Name, MatProp, MatAng, Thick, Color, Notes, GUID)
+                (sec, mat, 0.0, float(t)),              # (Name, MatProp, MatAng, Thick)
+            ]
+            for args in candidates:
+                if try_call(fn, args):
                     return
-                except Exception as e:
-                    if _is_signature_mismatch(e):
-                        last = ("SetShell", args, e)
-                    else:
-                        raise RuntimeError(f"SetShell failed (not signature): {repr(e)}")
 
-        # --- Try SetShell_1 variants too ---
-        for args in (
-            (sec, mat, 0.0, float(t), 0, "", ""),
-            (sec, mat, 0.0, float(t)),
-        ):
-            try:
-                model.PropArea.SetShell_1(*args)
-                return
-            except Exception as e:
-                if _is_signature_mismatch(e):
-                    last = ("SetShell_1", args, e)
-                else:
-                    raise RuntimeError(f"SetShell_1 failed (not signature): {repr(e)}")
+        # ---------- B) Variants where arg2 is ShellType (int) ----------
+        for fn in fns:
+            for st in shell_types:
+                candidates = [
+                    # Most common "full" signature:
+                    # (Name, ShellType, MatProp, MatAng, Thickness, Color, Notes, GUID)
+                    (sec, int(st), mat, 0.0, float(t), 0, "", ""),
 
-        for st in shell_types:
-            for args in (
-                (sec, int(st), mat, 0.0, float(t), 0, "", ""),
-                (sec, int(st), mat, 0.0, float(t)),
-            ):
-                try:
-                    model.PropArea.SetShell_1(*args)
-                    return
-                except Exception as e:
-                    if _is_signature_mismatch(e):
-                        last = ("SetShell_1", args, e)
-                    else:
-                        raise RuntimeError(f"SetShell_1 failed (not signature): {repr(e)}")
+                    # Some builds use Thickness before MatAng:
+                    # (Name, ShellType, MatProp, Thickness, MatAng, Color, Notes, GUID)
+                    (sec, int(st), mat, float(t), 0.0, 0, "", ""),
+
+                    # Some builds omit GUID/Notes:
+                    (sec, int(st), mat, 0.0, float(t), 0, ""),
+                    (sec, int(st), mat, float(t), 0.0, 0, ""),
+
+                    # Minimal-ish:
+                    (sec, int(st), mat, 0.0, float(t)),
+                    (sec, int(st), mat, float(t), 0.0),
+
+                    # Thickness later (your error suggests this might be happening):
+                    # (Name, ShellType, MatProp, MatAng, Color, Notes, GUID, Thickness)
+                    (sec, int(st), mat, 0.0, 0, "", "", float(t)),
+                ]
+                for args in candidates:
+                    if try_call(fn, args):
+                        return
 
         fn, args, err = last if last else ("SetShell/SetShell_1", None, "Unknown")
         raise RuntimeError(
