@@ -182,7 +182,7 @@ def _ensure_openpyxl():
 
 
 # --- DEBUG SWITCH ---
-DEBUG = False
+DEBUG = True
 DEBUG_COM_SHAPES = False
 
 # ---- Soil constants (backend-fixed) ----
