@@ -181,7 +181,7 @@ def _ensure_openpyxl():
 
 
 # --- DEBUG SWITCH ---
-DEBUG = True
+DEBUG = False
 DEBUG_COM_SHAPES = False
 
 # ---- Soil constants (backend-fixed) ----
@@ -2498,7 +2498,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # Extract the actual built model (what SAP really has)
         nodes, elems, areas = _extract_model_to_dfs(model)
 
-        _log("[DEBUG] SAP area objects (live):", len(_get_all_area_names(model)))
         _log("[DEBUG] First 10 SAP area names:", _get_all_area_names(model)[:10])
 
         _log("[DEBUG] Extracted:", f"nodes={len(nodes)} elems={len(elems)} areas_df={0 if areas is None else len(areas)}")
@@ -2608,6 +2607,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         import traceback
         try:
             disp_df = _collect_joint_displacements(model, node_names, "Dead")
+
+            _log("[DEBUG] SAP area objects (live):", len(_get_all_area_names(model)))
 
             _log("[DEBUG] JointDispl rows:", 0 if disp_df is None else len(disp_df))
 
