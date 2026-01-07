@@ -840,8 +840,8 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
         
         if i < 5:
             try:
-                prop = model.AreaObj.GetProperty(str(created_name))
-                _log("[DEBUG] Area property confirmed:", created_name, prop)
+                prop = area.GetProperty(str(created_name))
+                _log("[DEBUG] Area property confirmed:", created_name, repr(prop))
             except Exception as e:
                 _log("[DEBUG] AreaObj.GetProperty FAILED:", created_name, repr(e))
 
