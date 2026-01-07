@@ -2584,6 +2584,12 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # Run analysis (Dead + Soil case if defined)
         _run_analysis(model)
 
+        try:
+            res = model.Results.Setup.GetCaseSelectedForOutput()
+            _log("[DEBUG] Cases selected for output:", repr(res))
+        except Exception as e:
+            _log("[DEBUG] GetCaseSelectedForOutput failed:", repr(e))
+
         # Post-run verification (did SOIL_CASE actually generate results?)
         if soil:
             ok = _case_has_any_joint_displ_output(model, SOIL_CASE_NAME)
