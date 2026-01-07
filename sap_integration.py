@@ -917,11 +917,17 @@ def _case_has_any_joint_displ_output(model, case_name, vertical_axis="Z"):
             except Exception:
                 out = model.Results.JointDispl(str(joint_name), 0, case_name)
 
-            ret, n, base = _sap_results_header(out)
-            try:
-                return int(n or 0)
-            except Exception:
+            ret, n_header, base = _sap_results_header(out)
+            if base is None:
                 return 0
+
+            obj_raw = out[base + 0] if (len(out) > base + 0) else None
+            try:
+                n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+            except Exception:
+                n_actual = 0
+
+            return int(n_actual or (n_header or 0))
 
         # ---- Probe ----
         for j in probes:
@@ -1166,9 +1172,18 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
         if not isinstance(out, (list, tuple)) or len(out) < 12:
             continue
 
-        ret, nres, base = _sap_results_header(out)
-        nres = int(nres or 0)
-        if base is None or nres <= 0:
+        ret, n_header, base = _sap_results_header(out)
+        if base is None:
+            continue
+
+        obj_raw = out[base + 0] if len(out) > base + 0 else None
+        try:
+            n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+        except Exception:
+            n_actual = 0
+
+        nres = int(n_actual or (n_header or 0))
+        if nres <= 0:
             continue
 
         # Layout starting at base:
@@ -1279,18 +1294,24 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 
         # ---- NOW attempt normal parsing ----
         try:
-            nres = _nres(out)
-
-            # IMPORTANT: for now, DON'T skip silently if nres==0.
-            # Log it so we can fix the header parser.
-            if nres <= 0:
-                if DEBUG:
-                    _log("[DEBUG] AreaForceShell nres=0 (header parse likely wrong). area=", an,
-                         "api=", used_api, "itemtype=", used_itemtype)
+            ret, n_header, base = _sap_results_header(out)
+            if base is None:
                 continue
 
-            ret, nres, base = _sap_results_header(out)
-            if base is None or nres <= 0:
+            # trust actual Obj array length if present (more reliable than header n)
+            obj_raw = out[base + 0] if len(out) > base + 0 else None
+            try:
+                n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+            except Exception:
+                n_actual = 0
+
+            nres = int(n_actual or (n_header or 0))
+
+            if nres <= 0:
+                if DEBUG:
+                    _log("[DEBUG] AreaForceShell nres=0 (no rows). area=", an,
+                        "api=", used_api, "itemtype=", used_itemtype,
+                        "ret=", ret, "n_header=", n_header, "n_actual=", n_actual, "base=", base)
                 continue
 
             Obj      = _as_seq(out[base + 0],  nres)
@@ -2476,26 +2497,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             model.File.Save(sdb_path)
         except Exception:
             pass
-
-        # ============================================================
-        # ✅ CORRECT ANALYSIS BLOCK (the part you were editing)
-        # - Clear prior results (optional but helpful)
-        # - Force cases into analysis run set
-        # - Run analysis once
-        # - Verify SOIL_CASE produced output
-        # ============================================================
-
-        # Clear old results
-        try:
-            model.Analyze.DeleteResults("Dead")
-        except Exception:
-            pass
-
-        if soil:
-            try:
-                model.Analyze.DeleteResults(SOIL_CASE_NAME)
-            except Exception:
-                pass
 
         # Force run flags
         _ensure_case_runs_in_analysis(model, "Dead")
