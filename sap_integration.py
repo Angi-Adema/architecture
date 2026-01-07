@@ -14,6 +14,7 @@ from xml.parsers.expat import model
 import pandas as pd
 import comtypes.client as cc
 import numpy as np
+import ctypes
 from collections import defaultdict
 
 def _sap_get_name_list(res):
@@ -762,40 +763,75 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
     def _ensure_shell_prop(sec: str, mat: str, t: float):
         """
         SAP2000 COM builds differ in PropArea.SetShell signature.
-        Try common signatures (v20 often needs MatAng).
+        Some builds expect arg2 to be an integer ShellType enum.
         """
         last = None
 
-        # Try SetShell
-        for args in [
-            (sec, mat, 0.0, float(t)),                 # Name, MatProp, MatAng, t
-            (sec, mat, 0.0, float(t), 0, "", ""),       # + Color, Notes, GUID (common pattern)
-            (sec, mat, 0.0, float(t), 0, "", "", ""),   # sometimes extra param exists in some builds
-        ]:
+        # Candidate shell type enums to try (thin/thick/membrane variants differ by build)
+        shell_types = [0, 1, 2, 3, 4]
+
+        def _is_signature_mismatch(e: Exception) -> bool:
+            return isinstance(e, (TypeError, ValueError, ctypes.ArgumentError))
+
+        # --- Try SetShell ---
+        for args in (
+            # Common newer: (Name, MatProp, MatAng, Thickness, Color, Notes, GUID)
+            (sec, mat, 0.0, float(t), 0, "", ""),
+            (sec, mat, 0.0, float(t)),
+        ):
             try:
                 model.PropArea.SetShell(*args)
-
                 return
-            except TypeError as e:
-                last = ("SetShell", args, e)
             except Exception as e:
-                raise RuntimeError(f"SetShell failed (not signature): {repr(e)}")
+                if _is_signature_mismatch(e):
+                    last = ("SetShell", args, e)
+                else:
+                    raise RuntimeError(f"SetShell failed (not signature): {repr(e)}")
 
-        # Try SetShell_1 (signature varies)
-        for args in [
-            (sec, mat, 0.0, float(t)),
+        # --- Try SetShell where arg2 is ShellType (int) ---
+        for st in shell_types:
+            for args in (
+                # Likely: (Name, ShellType, MatProp, MatAng, Thickness, Color, Notes, GUID)
+                (sec, int(st), mat, 0.0, float(t), 0, "", ""),
+                (sec, int(st), mat, 0.0, float(t)),
+            ):
+                try:
+                    model.PropArea.SetShell(*args)
+                    return
+                except Exception as e:
+                    if _is_signature_mismatch(e):
+                        last = ("SetShell", args, e)
+                    else:
+                        raise RuntimeError(f"SetShell failed (not signature): {repr(e)}")
+
+        # --- Try SetShell_1 variants too ---
+        for args in (
             (sec, mat, 0.0, float(t), 0, "", ""),
-            (sec, mat, 0.0, float(t), 0, "", "", ""),
-        ]:
+            (sec, mat, 0.0, float(t)),
+        ):
             try:
                 model.PropArea.SetShell_1(*args)
                 return
-            except TypeError as e:
-                last = ("SetShell_1", args, e)
             except Exception as e:
-                raise RuntimeError(f"SetShell_1 failed (not signature): {repr(e)}")
+                if _is_signature_mismatch(e):
+                    last = ("SetShell_1", args, e)
+                else:
+                    raise RuntimeError(f"SetShell_1 failed (not signature): {repr(e)}")
 
-        # If we get here, nothing matched your COM signature
+        for st in shell_types:
+            for args in (
+                (sec, int(st), mat, 0.0, float(t), 0, "", ""),
+                (sec, int(st), mat, 0.0, float(t)),
+            ):
+                try:
+                    model.PropArea.SetShell_1(*args)
+                    return
+                except Exception as e:
+                    if _is_signature_mismatch(e):
+                        last = ("SetShell_1", args, e)
+                    else:
+                        raise RuntimeError(f"SetShell_1 failed (not signature): {repr(e)}")
+
         fn, args, err = last if last else ("SetShell/SetShell_1", None, "Unknown")
         raise RuntimeError(
             f"Failed to define shell property sec='{sec}' mat='{mat}' t={t}. "
