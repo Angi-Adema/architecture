@@ -766,8 +766,6 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
         Some builds expect arg2 = ShellType (int), and thickness may not be 5th.
         We'll brute-force the common variants.
         """
-        import ctypes
-
         last = None
         shell_types = [0, 1, 2, 3, 4]
 
