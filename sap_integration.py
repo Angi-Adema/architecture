@@ -924,7 +924,7 @@ def _add_default_self_weight(model, pattern="Dead", mult=1.0):
         pass
 
 
-def _run_analysis(model):
+def _run_analysis(model, soil_case=None):
     try:
         ret = model.Analyze.RunAnalysis()
         _log(f"RunAnalysis ret={ret}")
@@ -935,7 +935,8 @@ def _run_analysis(model):
 
             # Select ONLY the cases you will query
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
-            model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE_NAME)
+            if soil_case:
+                model.Results.Setup.SetCaseSelectedForOutput(str(soil_case))
 
             res = model.Results.Setup.GetCaseSelectedForOutput()
             _log("[DEBUG] Cases selected for output:", repr(res))
@@ -2509,6 +2510,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     Note: constant overburden is BACKEND fixed as OVERBURDEN_PRESSURE_NPM2.
     """
+    # ---- Canonical soil identifiers (single source of truth) ----
+    SOIL_CASE = SOIL_CASE_NAME
+    SOIL_PATTERN = SOIL_LOAD_PATTERN
 
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
@@ -2626,8 +2630,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     burial_depth_vertex_m=d_vertex,
                     gamma_soil_Npm3=gamma,
                     vertical_axis=soil.get("axis", "Z"),
-                    load_pattern=SOIL_LOAD_PATTERN,
-                    case_name=SOIL_CASE_NAME,
+                    load_pattern=SOIL_PATTERN,
+                    case_name=SOIL_CASE,
                     replace=True
                 )
 
@@ -2651,10 +2655,10 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # Force run flags
         _ensure_case_runs_in_analysis(model, "Dead")
         if soil:
-            _ensure_case_runs_in_analysis(model, SOIL_CASE_NAME)
+            _ensure_case_runs_in_analysis(model, SOIL_CASE)
 
         # Run analysis (Dead + Soil case if defined)
-        _run_analysis(model)
+        _run_analysis(model, soil_case=SOIL_CASE if soil else None)
 
         try:
             res = model.Results.Setup.GetCaseSelectedForOutput()
@@ -2664,7 +2668,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         # Post-run verification (did SOIL_CASE actually generate results?)
         if soil:
-            ok = _case_has_any_joint_displ_output(model, SOIL_CASE_NAME)
+            ok = _case_has_any_joint_displ_output(model, SOIL_CASE)
             _log(f"[DEBUG] SOIL_CASE produced output? {ok}")
 
         # Default: output "Dead"
@@ -2686,11 +2690,11 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                         depth_max=soil.get("depth_max", 4.0),
                         depth_step=soil.get("depth_step", 0.5),
                         gamma_soil_N_per_m3=soil.get("gamma", 18000.0),
-                        load_pattern_name=soil.get("load_pattern", "SOIL"),
+                        load_pattern_name=soil.get("load_pattern", SOIL_PATTERN),
                         joint_pattern_name=soil.get("joint_pattern", "SOIL_DEPTH"),
                         vertical_axis=soil.get("axis", "Z"),
                         normalize_pattern=soil.get("normalize", False),
-                        results_case_name=soil.get("case_name", "SOIL_CASE"),
+                        results_case_name=soil.get("case_name", SOIL_CASE),
                         replace_area_load_each_step=replace_area_load_each_step,
                         visible=visible,
                         close_after=False,
@@ -2721,7 +2725,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         soil_disp_df = pd.DataFrame()
         if soil_meta and soil_meta.get("overburden", {}).get("assigned_areas", 0) > 0:
             try:
-                soil_disp_df = _collect_joint_displacements(model, node_names, SOIL_CASE_NAME)
+                soil_disp_df = _collect_joint_displacements(model, node_names, SOIL_CASE)
 
                 _log("[DEBUG] SOIL JointDispl rows:", 0 if soil_disp_df is None else len(soil_disp_df))
 
@@ -2757,7 +2761,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             if soil:
                 try:
                     model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-                    model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE_NAME)
+                    model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE)
                     model.Results.Setup.SetOptionMode(0)
 
                     # 🔍 DEBUG: confirm selection state (Soil)
@@ -2773,13 +2777,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 # ✅ QUICK PROBE: does SOIL_CASE have ANY joint displacement output at all?
                 # Put this BEFORE collecting shell results so you know if the case is dead.
                 try:
-                    probe = _collect_joint_displacements(model, node_names, case=SOIL_CASE_NAME)
+                    probe = _collect_joint_displacements(model, node_names, case=SOIL_CASE)
                     _log("[DEBUG] SOIL_CASE JointDispl probe rows:", 0 if probe is None else len(probe))
                 except Exception as e:
                     _log("[DEBUG] SOIL_CASE JointDispl probe failed:", repr(e))
 
                 # ✅ collect SOIL shell results ONCE
-                shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE_NAME)
+                shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE)
 
         _log(
             "[ROOTCHECK] Shell SOIL coverage",
@@ -2888,7 +2892,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     "normalize": soil.get("normalize", False),
                     "load_pattern": soil.get("load_pattern", "SOIL"),
                     "joint_pattern": soil.get("joint_pattern", "SOIL_DEPTH"),
-                    "case_name": soil.get("case_name", "SOIL_CASE"),
+                    "case_name": soil.get("case_name", SOIL_CASE),
                     "replace_each_step": soil.get("replace_each_step", True),
                 }])
                 soil_cfg_df.to_excel(xlw, sheet_name="SoilConfig", index=False)
