@@ -1299,6 +1299,9 @@ def _collect_frame_end_forces(model, frame_names, case="Dead"):
     return pd.DataFrame(rows)
 
 def _collect_shell_forces_moments(model, area_names, case="Dead"):
+    # add near top of _collect_shell_forces_moments
+    empty_probe_logs_left = 10
+
     rows = []
     _select_case(model, case)
 
@@ -1379,12 +1382,15 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 
                 # ✅ IMPORTANT: do NOT accept “successful” calls that return 0 rows
                 if nres_try <= 0:
-                    if DEBUG:
+                    if DEBUG and empty_probe_logs_left > 0:
                         _log("[DEBUG] Shell probe empty:",
-                             "case=", case, "area=", an,
-                             "api=", mname, "itemtype=", it,
-                             "ret=", ret_try, "n_header=", n_header_try,
-                             "nres=", nres_try, "base=", base_try)
+                            "case=", case, "area=", an,
+                            "api=", mname, "itemtype=", it,
+                            "ret=", ret_try, "n_header=", n_header_try,
+                            "nres=", nres_try, "base=", base_try)
+                        empty_probe_logs_left -= 1
+                        if empty_probe_logs_left == 0:
+                            _log("[DEBUG] (suppressing further shell probe empty logs...)")
                     continue
 
                 out = out_try
