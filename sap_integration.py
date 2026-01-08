@@ -1343,22 +1343,19 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
         return None
 
     def _infer_nres(out):
-        """
-        Infer nres robustly: prefer actual Obj-array length over header.
-        Returns (nres, ret, n_header, base)
-        """
-        ret, n_header, base = _sap_results_header(out)
-        if base is None:
-            return 0, ret, n_header, base
+        if not isinstance(out, (list, tuple)):
+            return 0, None, None, None
 
-        obj_raw = out[base + 0] if (isinstance(out, (list, tuple)) and len(out) > base + 0) else None
-        try:
-            n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
-        except Exception:
-            n_actual = 0
+        # Try common bases (1 and 2) without trusting header parsing
+        candidates = []
+        for base in (1, 2):
+            obj_raw = out[base] if len(out) > base else None
+            n_actual = len(obj_raw) if isinstance(obj_raw, (list, tuple)) else 0
+            candidates.append((n_actual, base))
 
-        nres = int(n_actual or (n_header or 0))
-        return nres, ret, n_header, base
+        nres, base = max(candidates, key=lambda t: t[0])
+        return int(nres), None, None, base
+
 
     # de-dupe area list (prevents accidental repeats)
     seen = set()
@@ -1391,7 +1388,24 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
                             "case=", case, "area=", an,
                             "api=", mname, "itemtype=", it,
                             "ret=", ret_try, "n_header=", n_header_try,
-                            "nres=", nres_try, "base=", base_try)
+                            "nres=", nres_try, "base=", base_try,
+                            "out_len=", (len(out_try) if isinstance(out_try, (list, tuple)) else "n/a"))
+
+                        try:
+                            if isinstance(out_try, (list, tuple)):
+                                _log("[DEBUG] Shell OUT head:", repr(out_try[:8]))
+                                _log("[DEBUG] Shell OUT tail:", repr(out_try[-8:]))
+                                _log("[DEBUG] Shell OUT types:", [type(x).__name__ for x in out_try])
+
+                            # Show which slots contain arrays and their lengths
+                            lens = []
+                            for i, x in enumerate(out_try):
+                                if isinstance(x, (list, tuple)):
+                                    lens.append((i, len(x)))
+                            _log("[DEBUG] Shell OUT array lens:", lens[:15])
+                        except Exception as e:
+                            _log("[DEBUG] Shell OUT inspect failed:", repr(e))
+
                         empty_probe_logs_left -= 1
                         if empty_probe_logs_left == 0:
                             _log("[DEBUG] (suppressing further shell probe empty logs...)")
