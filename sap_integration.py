@@ -904,14 +904,6 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
             raise RuntimeError(
                 f"Area '{created_name}' created but SetProperty failed for sec='{sec}'. err={repr(e)}"
             )
-        
-        if i < 5:
-            try:
-                prop = area.GetProperty(str(created_name))
-                _log("[DEBUG] Area property confirmed:", created_name, repr(prop))
-            except Exception as e:
-                _log("[DEBUG] AreaObj.GetProperty FAILED:", created_name, repr(e))
-
 
 def _fix_base_nodes(model, nodes_df, tol=1e-3, fix=(1, 1, 1, 1, 1, 1)):
     """
@@ -1319,7 +1311,7 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 
     # Prefer Object (0) first; if the model isn’t meshed the way we expect,
     # itemtype=1 can return ret=0 but nres=0.
-    ITEMTYPE_CANDIDATES = (0, 1)  # 0=Object, 1=Element(mesh)
+    ITEMTYPE_CANDIDATES = (0, 1, 2)  # 0=Object, 1=Element(mesh)
     api_methods = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
 
     fail_logs_left = 6
@@ -2593,14 +2585,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             _log("[DEBUG] SAP area objects (live):", len(area_live))
             _log("[DEBUG] First 10 SAP area names:", area_live[:10])
 
-            # 🔎 NEW: verify the first few areas actually have a shell property
-            for an in area_live[:5]:
-                try:
-                    res = model.AreaObj.GetProperty(str(an))
-                    _log("[DEBUG] AreaObj.GetProperty:", "area=", an, "res=", repr(res))
-                except Exception as e:
-                    _log("[DEBUG] AreaObj.GetProperty FAILED:", "area=", an, "err=", repr(e))
-
             # Orient area local axes...
             try:
                 nodes_tot = len(nodes_in)
@@ -2677,12 +2661,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         # Run analysis (Dead + Soil case if defined)
         _run_analysis(model, soil_case=(SOIL_CASE if soil else None))
-
-        try:
-            res = model.Results.Setup.GetCaseSelectedForOutput()
-            _log("[DEBUG] Cases selected for output:", repr(res))
-        except Exception as e:
-            _log("[DEBUG] GetCaseSelectedForOutput failed:", repr(e))
 
         # Post-run verification (did SOIL_CASE actually generate results?)
         if soil:
@@ -2761,14 +2739,6 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             try:
                 model.Results.Setup.DeselectAllCasesAndCombosForOutput()
                 model.Results.Setup.SetCaseSelectedForOutput("Dead")
-                model.Results.Setup.SetOptionMode(0)
-
-                # 🔍 DEBUG: confirm selection state (Dead)
-                try:
-                    sel = model.Results.Setup.GetCaseSelectedForOutput()
-                    _log("[DEBUG] Currently selected for output (Dead):", repr(sel))
-                except Exception as e:
-                    _log("[DEBUG] GetCaseSelectedForOutput failed (Dead):", repr(e))
 
             except Exception as e:
                 _log("[DEBUG] Selecting Dead for shell output failed:", repr(e))
@@ -2780,25 +2750,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 try:
                     model.Results.Setup.DeselectAllCasesAndCombosForOutput()
                     model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE)
-                    model.Results.Setup.SetOptionMode(0)
-
-                    # 🔍 DEBUG: confirm selection state (Soil)
-                    try:
-                        sel = model.Results.Setup.GetCaseSelectedForOutput()
-                        _log("[DEBUG] Currently selected for output (Soil):", repr(sel))
-                    except Exception as e:
-                        _log("[DEBUG] GetCaseSelectedForOutput failed (Soil):", repr(e))
 
                 except Exception as e:
                     _log("[DEBUG] Selecting SOIL_CASE for shell output failed:", repr(e))
-
-                # ✅ QUICK PROBE: does SOIL_CASE have ANY joint displacement output at all?
-                # Put this BEFORE collecting shell results so you know if the case is dead.
-                try:
-                    probe = _collect_joint_displacements(model, node_names, case=SOIL_CASE)
-                    _log("[DEBUG] SOIL_CASE JointDispl probe rows:", 0 if probe is None else len(probe))
-                except Exception as e:
-                    _log("[DEBUG] SOIL_CASE JointDispl probe failed:", repr(e))
 
                 # ✅ collect SOIL shell results ONCE
                 shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE)
