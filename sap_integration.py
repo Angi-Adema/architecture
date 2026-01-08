@@ -280,10 +280,19 @@ def _as_seq(x, n):
 
 def _select_case(model, case, reset=False):
     try:
+        setup = model.Results.Setup
+
         if reset:
-            model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-        model.Results.Setup.SetCaseSelectedForOutput(str(case))
-        model.Results.Setup.SetOptionMode(0)
+            try:
+                setup.DeselectAllCasesAndCombosForOutput()
+            except Exception:
+                pass
+
+        setup.SetCaseSelectedForOutput(str(case))
+
+        # IMPORTANT: your build does NOT have SetOptionMode
+        # So do NOT call it.
+
         return True
     except Exception as e:
         _log("[DEBUG] _select_case failed:", "case=", case, "reset=", reset, "err=", repr(e))
@@ -929,19 +938,22 @@ def _run_analysis(model, soil_case=None):
         ret = model.Analyze.RunAnalysis()
         _log(f"RunAnalysis ret={ret}")
 
-        # 🔴 CRITICAL: force result cases to be selectable via API
+        # Select cases for output (no SetOptionMode, no GetCaseSelectedForOutput)
         try:
             model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+        except Exception:
+            pass
 
-            # Select ONLY the cases you will query
+        try:
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
-            if soil_case:
-                model.Results.Setup.SetCaseSelectedForOutput(str(soil_case))
-
-            res = model.Results.Setup.GetCaseSelectedForOutput()
-            _log("[DEBUG] Cases selected for output:", repr(res))
         except Exception as e:
-            _log("[DEBUG] Output case selection failed:", repr(e))
+            _log("[DEBUG] Select Dead failed:", repr(e))
+
+        if soil_case:
+            try:
+                model.Results.Setup.SetCaseSelectedForOutput(str(soil_case))
+            except Exception as e:
+                _log("[DEBUG] Select soil case failed:", repr(e))
 
         return ret
     except Exception as e:
@@ -2053,7 +2065,7 @@ def sweep_soil_pressure_by_depth(
                 replace=replace_area_load_each_step
             )
 
-        _run_analysis(model)
+        _run_analysis(model, soil_case=results_case_name)
 
         node_names = [n for (n, _, _, _) in joints]
 
@@ -2664,7 +2676,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             _ensure_case_runs_in_analysis(model, SOIL_CASE)
 
         # Run analysis (Dead + Soil case if defined)
-        _run_analysis(model, soil_case=SOIL_CASE if soil else None)
+        _run_analysis(model, soil_case=(SOIL_CASE if soil else None))
 
         try:
             res = model.Results.Setup.GetCaseSelectedForOutput()
