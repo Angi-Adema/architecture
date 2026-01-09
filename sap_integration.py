@@ -144,7 +144,7 @@ def _assign_area_surface_pressure_by_uniform(
             ret = area.SetLoadSurfacePressure(name, patt, int(d), p, csys, repl)
             if ret == 0:
                 _log_load_ok("SurfacePressure(sigA)")
-                _log("OB ok:", "area=", area_name, "via=SurfacePressure", "dir=", d, "p=", p)
+                # _log("OB ok:", "area=", area_name, "via=SurfacePressure", "dir=", d, "p=", p)
                 return True
             else:
                 # SAP returned a nonzero ret code (not an exception)
@@ -1639,6 +1639,9 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
     for q in query_variants:
         for it in itemtypes:
             raw = _call_area_force_shell(model, q, it, case_name=case_name)
+
+            
+
             if raw is None:
                 continue
 
