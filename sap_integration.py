@@ -1176,6 +1176,24 @@ def _sap_results_header(out):
 
     return (None, 0, None)
 
+def _sap_retcode(x):
+    """
+    Normalize SAP COM return values.
+
+    SAP calls may return:
+      - int ret
+      - or tuple/list where the *last* item is the ret code
+    """
+    if isinstance(x, (int, float)):
+        return int(x)
+
+    if isinstance(x, (list, tuple)) and x:
+        last = x[-1]
+        if isinstance(last, (int, float)):
+            return int(last)
+
+    return None
+
 def _parse_area_force_shell_raw(raw):
     """
     Parse RESULTS AreaForceShell(...) raw COM return into named arrays.
@@ -2649,6 +2667,19 @@ def _assign_depth_based_overburden_to_all_areas(
 
         _log("[DEBUG] StaticLinear.SetLoads:", case_name, "pattern=", load_pattern, "ret=", ret_loads)
 
+        rc = _sap_retcode(ret_loads)
+        _log("[DEBUG] StaticLinear.SetLoads retcode:", rc)
+
+        if rc is None or rc != 0:
+            _log("[DEBUG] StaticLinear.SetLoads FAILED -> case will not output. ret=", ret_loads)
+            return {
+                "assigned_areas": 0,
+                "failed_areas": 0,
+                "case": case_name,
+                "pattern": load_pattern,
+                "error": f"SetLoads failed ret={ret_loads}"
+            }
+
         # If we never got a ret, it failed all signatures
         if ret_loads is None:
             _log("[DEBUG] StaticLinear.SetLoads FAILED (all signatures). last_err=", repr(err_last))
@@ -3083,6 +3114,14 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         # --- Shell results (areas) ---
         area_names = _get_all_area_names(model)
+
+        # --- PROBE: does per-area query return shell forces in this build? ---
+        try:
+            probe_area = area_names[0]
+            raw, api = _call_area_force_shell(model, probe_area, 1, debug=True)
+            _fixA_log_raw_once(raw, tag=f"PerAreaProbe api={api} area={probe_area} it=1")
+        except Exception as e:
+            _log("[DEBUG] Per-area shell probe failed:", repr(e))
 
         shell_dead_df = pd.DataFrame()
         shell_soil_df = pd.DataFrame()
