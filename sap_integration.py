@@ -18,24 +18,33 @@ from collections import defaultdict
 
 def _call_area_force_shell(model, area_name, itemtype, case_name=None):
     """
-    Wrapper for SAP2000 RESULTS AreaForceShell with consistent calling.
+    Wrapper for SAP2000 RESULTS shell forces with consistent calling.
+    Tries AreaForceShell, AreaForceShell_1, ShellForce.
     Returns the raw COM tuple/list result.
     """
     try:
-        fn = getattr(model.Results, "AreaForceShell", None)
-        if fn is None:
-            return None
+        candidates = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
+        for mname in candidates:
+            fn = getattr(model.Results, mname, None)
+            if fn is None:
+                continue
 
-        # try common signatures
-        try:
-            return fn(str(area_name), int(itemtype))
-        except Exception:
+            # try common signatures
+            try:
+                return fn(str(area_name), int(itemtype))
+            except Exception:
+                pass
+
             if case_name is not None:
-                return fn(str(area_name), int(itemtype), str(case_name))
-            return None
+                try:
+                    return fn(str(area_name), int(itemtype), str(case_name))
+                except Exception:
+                    pass
+
+        return None
 
     except Exception as e:
-        _log("[DEBUG] Results.AreaForceShell exception:", area_name, "it=", itemtype, repr(e))
+        _log("[DEBUG] Results shell-force exception:", area_name, "it=", itemtype, repr(e))
         return None
 
 def _sap_get_name_list(res):
