@@ -36,7 +36,7 @@ def _call_area_force_shell(model, area_name, itemtype, debug=False):
 
         try:
             raw = fn(str(area_name), int(itemtype))
-            if debug and DEBUG:
+            if debug:
                 _log("[DEBUG] Shell API ok:", "api=", mname,
                      "args=", (str(area_name), int(itemtype)),
                      "out_len=", (len(raw) if isinstance(raw, (list, tuple)) else "n/a"))
@@ -1658,15 +1658,6 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 # --- FixA throttled raw logging (NEW) ---
 _FIXA_RAW_LOGS_LEFT = 2  # 2 events * ~3 lines/event ≈ <= 6 lines total
 
-if DEBUG:
-    # show a few examples of what Obj/LoadCase look like after parsing
-    _log("[DEBUG] FixA filter sample:",
-         "q=", repr(q), "it=", it,
-         "Obj0=", repr(Obj[0] if Obj else None),
-         "LC0=", repr(LoadCase[0] if LoadCase else None),
-         "asked_case=", repr(asked_case),
-         "wanted_sample=", repr(next(iter(wanted)) if wanted else None))
-
 def _fixA_log_raw_once(raw, tag="FixA"):
     """Print raw head/tail/types/lens with a hard throttle (about 6 lines total)."""
     global _FIXA_RAW_LOGS_LEFT
@@ -1690,7 +1681,7 @@ def _fixA_log_raw_once(raw, tag="FixA"):
     except Exception as e:
         _log(f"[{tag}] raw inspect failed:", repr(e))
 
-def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0, 1, 2), DEBUG=False):
+def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0, 1, 2), debug=False):
     """
     FIX A: Some SAP COM builds return empty arrays when querying a single area.
     Workaround: query ALL (or blank) once, then filter rows to the areas we want.
@@ -1718,7 +1709,7 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
 
     for q in query_variants:
         for it in itemtypes:
-            raw, api_used = _call_area_force_shell(model, q, it, debug=False)
+            raw, api_used = _call_area_force_shell(model, q, it, debug=debug)
             if raw is None:
                 # Throttled raw log (helps see "None" causes too)
                 _fixA_log_raw_once(raw, tag="FixA(raw=None)")
@@ -1806,7 +1797,7 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
                     best_variant = q
                     best_itemtype = it
 
-                if DEBUG:
+                if debug:
                     _log("[DEBUG] FixA shell rows:",
                         "case=", asked_case, "q=", repr(q), "it=", it, "rows=", len(rows))
 
@@ -3068,14 +3059,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 model,
                 case_name="Dead",
                 wanted_area_names=area_names,
-                DEBUG=DEBUG
+                debug=DEBUG
             )
             shell_dead_df = pd.DataFrame(dead_rows)
             _log("[DEBUG] FixA chosen (Dead):", "q=", repr(q_used), "it=", it_used, "rows=", len(shell_dead_df))
 
             if not shell_dead_df.empty:
                 shell_dead_df["ItemTypeUsed"] = it_used
-                shell_dead_df["APIUsed"] = "FixA:Results.AreaForceShell"
 
             # ================= SOIL shell results (Fix A) =================
             if soil:
@@ -3083,14 +3073,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model,
                     case_name=SOIL_CASE,
                     wanted_area_names=area_names,
-                    DEBUG=DEBUG
+                    debug=DEBUG
                 )
                 shell_soil_df = pd.DataFrame(soil_rows)
                 _log("[DEBUG] FixA chosen (SOIL_CASE):", "q=", repr(q_used2), "it=", it_used2, "rows=", len(shell_soil_df))
 
                 if not shell_soil_df.empty:
                     shell_soil_df["ItemTypeUsed"] = it_used2
-                    shell_soil_df["APIUsed"] = "FixA:Results.AreaForceShell"
 
         _log(
             "[ROOTCHECK] Shell SOIL coverage",
