@@ -16,36 +16,40 @@ import numpy as np
 import ctypes
 from collections import defaultdict
 
-def _call_area_force_shell(model, area_name, itemtype, case_name=None):
+def _call_area_force_shell(model, area_name, itemtype, case_name=None, debug=False):
     """
-    Wrapper for SAP2000 RESULTS shell forces with consistent calling.
-    Tries AreaForceShell, AreaForceShell_1, ShellForce.
-    Returns the raw COM tuple/list result.
+    Try multiple SAP APIs to retrieve shell forces.
+    Returns: (raw, api_used)
+      api_used in {"AreaForceShell", "AreaForceShell_1", "ShellForce"} or None
     """
-    try:
-        candidates = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
-        for mname in candidates:
-            fn = getattr(model.Results, mname, None)
-            if fn is None:
+    results = getattr(model, "Results", None)
+    if results is None:
+        return (None, None)
+
+    api_methods = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
+
+    for mname in api_methods:
+        fn = getattr(results, mname, None)
+        if fn is None:
+            continue
+
+        # Try common signatures
+        for args in (
+            (str(area_name), int(itemtype)),
+            (str(area_name), int(itemtype), str(case_name)) if case_name is not None else None,
+        ):
+            if args is None:
+                continue
+            try:
+                raw = fn(*args)
+                if debug and DEBUG:
+                    _log("[DEBUG] Shell API ok:", "api=", mname, "args=", args,
+                         "out_len=", (len(raw) if isinstance(raw, (list, tuple)) else "n/a"))
+                return (raw, mname)
+            except Exception:
                 continue
 
-            # try common signatures
-            try:
-                return fn(str(area_name), int(itemtype))
-            except Exception:
-                pass
-
-            if case_name is not None:
-                try:
-                    return fn(str(area_name), int(itemtype), str(case_name))
-                except Exception:
-                    pass
-
-        return None
-
-    except Exception as e:
-        _log("[DEBUG] Results shell-force exception:", area_name, "it=", itemtype, repr(e))
-        return None
+    return (None, None)
 
 def _sap_get_name_list(res):
     """
@@ -221,14 +225,60 @@ OVERBURDEN_PRESSURE_NPM2 = 18000.0  # N/m^2 (Pa) constant (backend)
 SOIL_LOAD_PATTERN = "SOIL_OB"       # load pattern name
 SOIL_CASE_NAME = "SOIL_CASE"
 
+# --- Logging to file (NEW) ---
+_LOG_FILE = None
+
+def _set_log_file(path: str):
+    """Set the log file path and write a header line."""
+    global _LOG_FILE
+    _LOG_FILE = path
+    try:
+        os.makedirs(os.path.dirname(_LOG_FILE), exist_ok=True)
+    except Exception:
+        pass
+    try:
+        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("\n" + "="*80 + "\n")
+            f.write(f"RUN START: {path}\n")
+            f.write("="*80 + "\n")
+    except Exception:
+        pass
+
+def _log_write_line(line: str):
+    """Append one line to the log file (if enabled)."""
+    if not _LOG_FILE:
+        return
+    try:
+        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 
 def _log(*a, sep=" ", end="\n"):
-    """Lightweight debug logger - only prints when DEBUG is True."""
-    if DEBUG:
-        try:
-            print("[DEBUG]", *a, sep=sep, end=end, flush=True)
-        except Exception:
-            pass
+    """Lightweight debug logger - prints when DEBUG is True, and writes to file if configured."""
+    if not DEBUG:
+        return
+
+    # Build the exact line we are printing
+    try:
+        msg = sep.join(str(x) for x in a)
+    except Exception:
+        msg = " ".join([repr(x) for x in a])
+
+    line = "[DEBUG] " + msg
+
+    # Console
+    try:
+        print(line, end=end, flush=True)
+    except Exception:
+        pass
+
+    # File (strip trailing newline behavior so file is clean)
+    try:
+        _log_write_line(line)
+    except Exception:
+        pass
 
 # --- Limit spammy per-area load errors ---
 _FAIL_COUNT = 0
@@ -1610,6 +1660,32 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
          "best_itemtype=", best_itemtype_seen)
     return df
 
+# --- FixA throttled raw logging (NEW) ---
+_FIXA_RAW_LOGS_LEFT = 2  # 2 events * ~3 lines/event ≈ <= 6 lines total
+
+def _fixA_log_raw_once(raw, tag="FixA"):
+    """Print raw head/tail/types/lens with a hard throttle (about 6 lines total)."""
+    global _FIXA_RAW_LOGS_LEFT
+    if not DEBUG or _FIXA_RAW_LOGS_LEFT <= 0:
+        return
+    _FIXA_RAW_LOGS_LEFT -= 1
+
+    try:
+        if not isinstance(raw, (list, tuple)):
+            _log(f"[{tag}] raw type:", type(raw).__name__, "value:", repr(raw))
+            return
+
+        head = repr(list(raw[:6]))
+        tail = repr(list(raw[-6:]))
+        types = [type(x).__name__ for x in raw[:6]]
+        lens = [(i, len(x)) for i, x in enumerate(raw) if isinstance(x, (list, tuple))][:12]
+
+        _log(f"[{tag}] raw head:", head)
+        _log(f"[{tag}] raw tail:", tail)
+        _log(f"[{tag}] raw types(head):", types, "array_lens:", lens)
+    except Exception as e:
+        _log(f"[{tag}] raw inspect failed:", repr(e))
+
 def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0, 1, 2), DEBUG=False):
     """
     FIX A: Some SAP COM builds return empty arrays when querying a single area.
@@ -1638,15 +1714,16 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
 
     for q in query_variants:
         for it in itemtypes:
-            raw = _call_area_force_shell(model, q, it, case_name=case_name)
-
-            
-
+            raw, api_used = _call_area_force_shell(model, q, it, case_name=case_name, debug=False)
             if raw is None:
+                # Throttled raw log (helps see "None" causes too)
+                _fixA_log_raw_once(raw, tag="FixA(raw=None)")
                 continue
 
             parsed = _parse_area_force_shell_raw(raw)
             if not parsed or not parsed.get("ok"):
+                # Throttled raw logging when parsing fails
+                _fixA_log_raw_once(raw, tag=f"FixA(parse_fail api={api_used} q={repr(q)} it={it})")
                 continue
 
             nres = int(parsed.get("nres") or 0)
@@ -1715,7 +1792,7 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
                     "M11": M11[i], "M22": M22[i], "M12": M12[i],
                     "V13": V13[i], "V23": V23[i],
                     "ItemTypeUsed": it,
-                    "APIUsed": "FixA:Results.AreaForceShell",
+                    "APIUsed": f"FixA:{api_used}" if api_used else "FixA:UnknownAPI",
                 })
 
             if rows:
@@ -1726,7 +1803,17 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
                     best_itemtype = it
 
                 if DEBUG:
-                    _log("[DEBUG] FixA shell rows:", "case=", asked_case, "q=", repr(q), "it=", it, "rows=", len(rows))
+                    _log("[DEBUG] FixA shell rows:",
+                        "case=", asked_case, "q=", repr(q), "it=", it, "rows=", len(rows))
+
+            else:
+                # We *did* get results from SAP, but after filtering
+                # (wanted areas / case name) nothing survived.
+                # This usually means Obj names or LoadCase labels do not match.
+                _fixA_log_raw_once(
+                    raw,
+                    tag=f"FixA(rows=0 api={api_used} q={repr(q)} it={it})"
+                )
 
         # If blank query worked best, stop early (usually the best behavior)
         if best_variant == "":
@@ -2759,6 +2846,10 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     if not os.path.exists(input_xlsx):
         raise FileNotFoundError(input_xlsx)
+    
+    base, _ext = os.path.splitext(input_xlsx)
+    _set_log_file(base + "_debug.log")
+    _log("Logging to:", base + "_debug.log")
 
     _reset_fail_counter()
     _ensure_openpyxl()
