@@ -648,7 +648,8 @@ def run():
                 filepath,
                 visible=True,
                 close_after=bool(var_autoclose.get()),
-                soil=soil_spec,
+                # DISABLED SOIL TEMPORARILY: (soil=soil_spec)
+                soil=None,
                 material=material_spec,
             )
             messagebox.showinfo(

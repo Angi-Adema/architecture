@@ -3118,8 +3118,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # --- PROBE: does per-area query return shell forces in this build? ---
         try:
             probe_area = area_names[0]
-            raw, api = _call_area_force_shell(model, probe_area, 1, debug=True)
-            _fixA_log_raw_once(raw, tag=f"PerAreaProbe api={api} area={probe_area} it=1")
+            raw, api, args = _call_area_force_shell(model, probe_area, 1, debug=True)
+            _fixA_log_raw_once(raw, tag=f"PerAreaProbe api={api} args={args} area={probe_area} it=1")
         except Exception as e:
             _log("[DEBUG] Per-area shell probe failed:", repr(e))
 
