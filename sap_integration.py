@@ -14,9 +14,10 @@ import pandas as pd
 import comtypes.client as cc
 import numpy as np
 import ctypes
+import datetime as _dt
 from collections import defaultdict
 
-def _call_area_force_shell(model, area_name, itemtype, case_name=None, debug=False):
+def _call_area_force_shell(model, area_name, itemtype, debug=False):
     """
     Try multiple SAP APIs to retrieve shell forces.
     Returns: (raw, api_used)
@@ -33,21 +34,15 @@ def _call_area_force_shell(model, area_name, itemtype, case_name=None, debug=Fal
         if fn is None:
             continue
 
-        # Try common signatures
-        for args in (
-            (str(area_name), int(itemtype)),
-            (str(area_name), int(itemtype), str(case_name)) if case_name is not None else None,
-        ):
-            if args is None:
-                continue
-            try:
-                raw = fn(*args)
-                if debug and DEBUG:
-                    _log("[DEBUG] Shell API ok:", "api=", mname, "args=", args,
-                         "out_len=", (len(raw) if isinstance(raw, (list, tuple)) else "n/a"))
-                return (raw, mname)
-            except Exception:
-                continue
+        try:
+            raw = fn(str(area_name), int(itemtype))
+            if debug and DEBUG:
+                _log("[DEBUG] Shell API ok:", "api=", mname,
+                     "args=", (str(area_name), int(itemtype)),
+                     "out_len=", (len(raw) if isinstance(raw, (list, tuple)) else "n/a"))
+            return (raw, mname)
+        except Exception:
+            continue
 
     return (None, None)
 
@@ -239,7 +234,7 @@ def _set_log_file(path: str):
     try:
         with open(_LOG_FILE, "a", encoding="utf-8") as f:
             f.write("\n" + "="*80 + "\n")
-            f.write(f"RUN START: {path}\n")
+            f.write(f"RUN START: {_dt.datetime.now().isoformat()} | {path}\n")
             f.write("="*80 + "\n")
     except Exception:
         pass
@@ -1663,6 +1658,15 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
 # --- FixA throttled raw logging (NEW) ---
 _FIXA_RAW_LOGS_LEFT = 2  # 2 events * ~3 lines/event ≈ <= 6 lines total
 
+if DEBUG:
+    # show a few examples of what Obj/LoadCase look like after parsing
+    _log("[DEBUG] FixA filter sample:",
+         "q=", repr(q), "it=", it,
+         "Obj0=", repr(Obj[0] if Obj else None),
+         "LC0=", repr(LoadCase[0] if LoadCase else None),
+         "asked_case=", repr(asked_case),
+         "wanted_sample=", repr(next(iter(wanted)) if wanted else None))
+
 def _fixA_log_raw_once(raw, tag="FixA"):
     """Print raw head/tail/types/lens with a hard throttle (about 6 lines total)."""
     global _FIXA_RAW_LOGS_LEFT
@@ -1714,7 +1718,7 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
 
     for q in query_variants:
         for it in itemtypes:
-            raw, api_used = _call_area_force_shell(model, q, it, case_name=case_name, debug=False)
+            raw, api_used = _call_area_force_shell(model, q, it, debug=False)
             if raw is None:
                 # Throttled raw log (helps see "None" causes too)
                 _fixA_log_raw_once(raw, tag="FixA(raw=None)")
