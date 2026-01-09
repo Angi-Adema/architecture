@@ -17,34 +17,62 @@ import ctypes
 import datetime as _dt
 from collections import defaultdict
 
-def _call_area_force_shell(model, area_name, itemtype, debug=False):
+def _call_area_force_shell(model, selector, itemtype, case_name=None, debug=False):
     """
-    Try multiple SAP APIs to retrieve shell forces.
-    Returns: (raw, api_used)
-      api_used in {"AreaForceShell", "AreaForceShell_1", "ShellForce"} or None
+    Try multiple SAP Results APIs/signatures to retrieve shell forces.
+
+    selector:
+      - usually an area name
+      - for FixA: may be "" or "ALL" (attempt global query)
+
+    Returns: (raw, api_used, args_used) or (None, None, None)
     """
     results = getattr(model, "Results", None)
     if results is None:
-        return (None, None)
+        return (None, None, None)
 
     api_methods = ["AreaForceShell", "AreaForceShell_1", "ShellForce"]
+
+    sel = str(selector)
+    it = int(itemtype)
+    cs = None if case_name is None else str(case_name)
+
+    # A grab-bag of common COM signatures across CSI builds.
+    # We try “minimal” first, then add case/step-like args.
+    arg_candidates = [
+        (sel, it),
+        (sel, it, cs),                    # some builds accept (name, itemtype, case)
+        (sel, it, 0, cs),                 # some builds accept (name, itemtype, step, case)
+        (sel, it, "Max", 0, cs),          # step type + step num + case (rare)
+        (sel, it, "Min", 0, cs),
+        (sel, it, "Step", 0, cs),
+        (sel, it, 0),                     # sometimes a third numeric is required
+    ]
+
+    # Remove None-containing tuples cleanly (COM hates None)
+    arg_candidates = [tuple(a for a in args if a is not None) for args in arg_candidates]
 
     for mname in api_methods:
         fn = getattr(results, mname, None)
         if fn is None:
             continue
 
-        try:
-            raw = fn(str(area_name), int(itemtype))
-            if debug:
-                _log("[DEBUG] Shell API ok:", "api=", mname,
-                     "args=", (str(area_name), int(itemtype)),
-                     "out_len=", (len(raw) if isinstance(raw, (list, tuple)) else "n/a"))
-            return (raw, mname)
-        except Exception:
-            continue
+        for args in arg_candidates:
+            try:
+                raw = fn(*args)
+                if debug:
+                    _log("[DEBUG] Shell API ok:",
+                         "api=", mname,
+                         "args=", args,
+                         "out_len=", (len(raw) if isinstance(raw, (list, tuple)) else "n/a"))
+                return (raw, mname, args)
+            except Exception as e:
+                # Only show signature mismatch-ish failures if you’re debugging heavily
+                if debug and DEBUG_COM_SHAPES:
+                    _log("[DEBUG] Shell API try failed:", "api=", mname, "args=", args, "err=", repr(e))
+                continue
 
-    return (None, None)
+    return (None, None, None)
 
 def _sap_get_name_list(res):
     """
@@ -1178,6 +1206,10 @@ def _parse_area_force_shell_raw(raw):
     nres = int(n_actual or (n_header or 0))
     if nres <= 0:
         return out
+    
+    # sanity: ensure we have at least base+12
+    if (base + 12) >= len(r):
+        return {"ok": False, "nres": nres, "reason": "not_enough_slots", "len": len(r), "base": base}
 
     def _get(i):
         return r[i] if (i is not None and i < len(r)) else None
@@ -1699,7 +1731,7 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
     except Exception as e:
         _log("[DEBUG] Results.Setup selection failed:", case_name, repr(e))
 
-    query_variants = ["", "ALL"]  # blank first, then ALL
+    query_variants = ["", "ALL", "All", "all", "ALL AREAS", "Area", "Shell", "SHELL"]  # blank first, then ALL
 
     best_rows = []
     best_variant = None
@@ -1709,10 +1741,10 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
 
     for q in query_variants:
         for it in itemtypes:
-            raw, api_used = _call_area_force_shell(model, q, it, debug=debug)
+            raw, api_used, args_used = _call_area_force_shell(model, q, it, case_name=case_name, debug=debug)
             if raw is None:
                 # Throttled raw log (helps see "None" causes too)
-                _fixA_log_raw_once(raw, tag="FixA(raw=None)")
+                _fixA_log_raw_once(raw, tag=f"FixA(parse_fail api={api_used} args={args_used} q={repr(q)} it={it})")
                 continue
 
             parsed = _parse_area_force_shell_raw(raw)
@@ -2990,6 +3022,8 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         try:
             model.Results.Setup.DeselectAllCasesAndCombosForOutput()
             model.Results.Setup.SetCaseSelectedForOutput("Dead")
+            if soil:
+                model.Results.Setup.SetCaseSelectedForOutput(str(SOIL_CASE))
         except Exception:
             pass
 
