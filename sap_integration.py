@@ -16,6 +16,28 @@ import numpy as np
 import ctypes
 from collections import defaultdict
 
+def _call_area_force_shell(model, area_name, itemtype, case_name=None):
+    """
+    Wrapper for SAP2000 RESULTS AreaForceShell with consistent calling.
+    Returns the raw COM tuple/list result.
+    """
+    try:
+        fn = getattr(model.Results, "AreaForceShell", None)
+        if fn is None:
+            return None
+
+        # try common signatures
+        try:
+            return fn(str(area_name), int(itemtype))
+        except Exception:
+            if case_name is not None:
+                return fn(str(area_name), int(itemtype), str(case_name))
+            return None
+
+    except Exception as e:
+        _log("[DEBUG] Results.AreaForceShell exception:", area_name, "it=", itemtype, repr(e))
+        return None
+
 def _sap_get_name_list(res):
     """
     Normalize SAP2000 GetNameList() return into a Python list[str].
@@ -1072,6 +1094,70 @@ def _sap_results_header(out):
 
     return (None, 0, None)
 
+def _parse_area_force_shell_raw(raw):
+    """
+    Parse RESULTS AreaForceShell(...) raw COM return into named arrays.
+    Supports both shapes:
+      A) (ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23, ..., ret?)
+      B) (nres, Obj, Elm, ..., ret)
+    Returns dict with keys:
+      ok, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
+    """
+    out = {"ok": False, "nres": 0}
+    if not isinstance(raw, (list, tuple)) or len(raw) < 10:
+        return out
+
+    r = list(raw)
+
+    # Determine where arrays start (base)
+    ret, n_header, base = _sap_results_header(r)
+    if base is None:
+        return out
+
+    # Infer nres from actual Obj array length (most reliable)
+    obj_raw = r[base + 0] if len(r) > base + 0 else None
+    try:
+        n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
+    except Exception:
+        n_actual = 0
+
+    nres = int(n_actual or (n_header or 0))
+    if nres <= 0:
+        return out
+
+    def _get(i):
+        return r[i] if (i is not None and i < len(r)) else None
+
+    # Layout starting at base (matches what you already use in _collect_shell_forces_moments)
+    Obj      = _as_seq(_get(base + 0),  nres)
+    Elm      = _as_seq(_get(base + 1),  nres)
+    LoadCase = _as_seq(_get(base + 2),  nres)
+    StepType = _as_seq(_get(base + 3),  nres)
+    StepNum  = _as_seq(_get(base + 4),  nres)
+
+    F11 = _as_seq(_get(base + 5),  nres)
+    F22 = _as_seq(_get(base + 6),  nres)
+    F12 = _as_seq(_get(base + 7),  nres)
+    M11 = _as_seq(_get(base + 8),  nres)
+    M22 = _as_seq(_get(base + 9),  nres)
+    M12 = _as_seq(_get(base + 10), nres)
+    V13 = _as_seq(_get(base + 11), nres)
+    V23 = _as_seq(_get(base + 12), nres)
+
+    out.update({
+        "ok": True,
+        "nres": nres,
+        "Obj": Obj,
+        "Elm": Elm,
+        "LoadCase": LoadCase,
+        "StepType": StepType,
+        "StepNum": StepNum,
+        "F11": F11, "F22": F22, "F12": F12,
+        "M11": M11, "M22": M22, "M12": M12,
+        "V13": V13, "V23": V23,
+    })
+    return out
+
 
 def _collect_joint_displacements_per_node(model, node_names, case="Dead"):
     rows = []
@@ -1514,6 +1600,127 @@ def _collect_shell_forces_moments(model, area_names, case="Dead"):
          "unique_areas=", (0 if df.empty else df["Area"].nunique()),
          "best_itemtype=", best_itemtype_seen)
     return df
+
+def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0, 1, 2), DEBUG=False):
+    """
+    FIX A: Some SAP COM builds return empty arrays when querying a single area.
+    Workaround: query ALL (or blank) once, then filter rows to the areas we want.
+
+    Returns: rows (list of dict), chosen_query (str), chosen_itemtype (int)
+    """
+    wanted = set(str(a).strip() for a in (wanted_area_names or []) if str(a).strip())
+    if not wanted:
+        return [], None, None
+
+    # Ensure the case is selected for output
+    try:
+        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+        model.Results.Setup.SetCaseSelectedForOutput(str(case_name))
+    except Exception as e:
+        _log("[DEBUG] Results.Setup selection failed:", case_name, repr(e))
+
+    query_variants = ["", "ALL"]  # blank first, then ALL
+
+    best_rows = []
+    best_variant = None
+    best_itemtype = None
+
+    asked_case = str(case_name).strip()
+
+    for q in query_variants:
+        for it in itemtypes:
+            raw = _call_area_force_shell(model, q, it, case_name=case_name)
+            if raw is None:
+                continue
+
+            parsed = _parse_area_force_shell_raw(raw)
+            if not parsed or not parsed.get("ok"):
+                continue
+
+            nres = int(parsed.get("nres") or 0)
+            if nres <= 0:
+                continue
+
+            # ---- Pull arrays safely ----
+            Obj      = parsed.get("Obj", [])
+            Elm      = parsed.get("Elm", [])
+            LoadCase = parsed.get("LoadCase", [])
+            StepType = parsed.get("StepType", [])
+            StepNum  = parsed.get("StepNum", [])
+
+            F11 = parsed.get("F11", [])
+            F22 = parsed.get("F22", [])
+            F12 = parsed.get("F12", [])
+            M11 = parsed.get("M11", [])
+            M22 = parsed.get("M22", [])
+            M12 = parsed.get("M12", [])
+            V13 = parsed.get("V13", [])
+            V23 = parsed.get("V23", [])
+
+            # If any required arrays are missing/mismatched, skip this attempt
+            # (Your parser should have aligned lengths, but this is a safety net.)
+            def _len_ok(a): 
+                return isinstance(a, (list, tuple)) and len(a) == nres
+
+            required = [Obj, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23]
+            if not all(_len_ok(a) for a in required):
+                continue
+            if not _len_ok(Elm):
+                # Elm is optional; if it doesn't match, replace with blanks
+                Elm = [""] * nres
+
+            rows = []
+
+            for i in range(nres):
+                area_i = str(Obj[i]).strip()
+                if not area_i or area_i not in wanted:
+                    continue
+
+                lc_i = str(LoadCase[i]).strip()
+                if asked_case and lc_i and lc_i != asked_case:
+                    continue
+
+                # Compute principal membrane extrema like your old collector
+                try:
+                    f11 = float(F11[i]); f22 = float(F22[i]); f12 = float(F12[i])
+                    avg = 0.5 * (f11 + f22)
+                    rad = ((0.5 * (f11 - f22)) ** 2 + (f12 ** 2)) ** 0.5
+                    fmax = avg + rad
+                    fmin = avg - rad
+                except Exception:
+                    f11 = F11[i]; f22 = F22[i]; f12 = F12[i]
+                    fmax = None
+                    fmin = None
+
+                rows.append({
+                    "Area": area_i,
+                    "Elm": str(Elm[i]).strip(),
+                    "Case": lc_i,
+                    "StepType": str(StepType[i]).strip(),
+                    "StepNum": StepNum[i],
+                    "F11": f11, "F22": f22, "F12": f12,
+                    "Fmax": fmax, "Fmin": fmin,
+                    "M11": M11[i], "M22": M22[i], "M12": M12[i],
+                    "V13": V13[i], "V23": V23[i],
+                    "ItemTypeUsed": it,
+                    "APIUsed": "FixA:Results.AreaForceShell",
+                })
+
+            if rows:
+                # Pick the best attempt (most rows)
+                if len(rows) > len(best_rows):
+                    best_rows = rows
+                    best_variant = q
+                    best_itemtype = it
+
+                if DEBUG:
+                    _log("[DEBUG] FixA shell rows:", "case=", asked_case, "q=", repr(q), "it=", it, "rows=", len(rows))
+
+        # If blank query worked best, stop early (usually the best behavior)
+        if best_variant == "":
+            break
+
+    return best_rows, best_variant, best_itemtype
 
 def _extrema_summary(shell_df, label):
     if shell_df is None or shell_df.empty:
@@ -2749,27 +2956,34 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         shell_soil_df = pd.DataFrame()
 
         if area_names:
-            # ================= DEAD shell results =================
-            try:
-                model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-                model.Results.Setup.SetCaseSelectedForOutput("Dead")
+            # ================= DEAD shell results (Fix A) =================
+            dead_rows, q_used, it_used = _collect_shell_forces_fixA(
+                model,
+                case_name="Dead",
+                wanted_area_names=area_names,
+                DEBUG=DEBUG
+            )
+            shell_dead_df = pd.DataFrame(dead_rows)
+            _log("[DEBUG] FixA chosen (Dead):", "q=", repr(q_used), "it=", it_used, "rows=", len(shell_dead_df))
 
-            except Exception as e:
-                _log("[DEBUG] Selecting Dead for shell output failed:", repr(e))
+            if not shell_dead_df.empty:
+                shell_dead_df["ItemTypeUsed"] = it_used
+                shell_dead_df["APIUsed"] = "FixA:Results.AreaForceShell"
 
-            shell_dead_df = _collect_shell_forces_moments(model, area_names, case="Dead")
-
-            # ================= SOIL shell results =================
+            # ================= SOIL shell results (Fix A) =================
             if soil:
-                try:
-                    model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-                    model.Results.Setup.SetCaseSelectedForOutput(SOIL_CASE)
+                soil_rows, q_used2, it_used2 = _collect_shell_forces_fixA(
+                    model,
+                    case_name=SOIL_CASE,
+                    wanted_area_names=area_names,
+                    DEBUG=DEBUG
+                )
+                shell_soil_df = pd.DataFrame(soil_rows)
+                _log("[DEBUG] FixA chosen (SOIL_CASE):", "q=", repr(q_used2), "it=", it_used2, "rows=", len(shell_soil_df))
 
-                except Exception as e:
-                    _log("[DEBUG] Selecting SOIL_CASE for shell output failed:", repr(e))
-
-                # ✅ collect SOIL shell results ONCE
-                shell_soil_df = _collect_shell_forces_moments(model, area_names, case=SOIL_CASE)
+                if not shell_soil_df.empty:
+                    shell_soil_df["ItemTypeUsed"] = it_used2
+                    shell_soil_df["APIUsed"] = "FixA:Results.AreaForceShell"
 
         _log(
             "[ROOTCHECK] Shell SOIL coverage",
