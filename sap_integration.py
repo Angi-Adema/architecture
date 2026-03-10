@@ -3046,11 +3046,21 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         # ---- RESULTS OUTPUT SELECTION (CRITICAL) ----
         try:
-            model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-            model.Results.Setup.SetCaseSelectedForOutput("Dead")
-            _log("[DEBUG] Results output selected: Dead")
+            r0 = model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+            r1 = model.Results.Setup.SetCaseSelectedForOutput("Dead")
+            _log("[DEBUG] Results output selection retcodes:",
+                "Deselect=", r0, "SelectDead=", r1)
         except Exception as e:
             _log("[DEBUG] Results output selection failed:", repr(e))
+
+        # ---- DEBUG: list load cases ----
+        try:
+            lc_raw = model.LoadCases.GetNameList()
+            _log("[DEBUG] LoadCases.GetNameList RAW:", repr(lc_raw))
+            lc_names = _sap_get_name_list(lc_raw)
+            _log("[DEBUG] LoadCases:", lc_names[:20], "count=", len(lc_names))
+        except Exception as e:
+            _log("[DEBUG] LoadCases.GetNameList failed:", repr(e))
 
         # Post-run verification (did SOIL_CASE actually generate results?)
         if soil:
