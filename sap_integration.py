@@ -123,6 +123,23 @@ def _sap_get_name_list(res):
     # --- already a list/tuple of names ---
     return [str(x) for x in r]
 
+def _resolve_case_name(model, wanted_name):
+    """
+    Return the actual SAP load case name matching wanted_name, ignoring case.
+    Falls back to wanted_name if no match is found.
+    """
+    try:
+        raw = model.LoadCases.GetNameList()
+        names = _sap_get_name_list(raw)
+        wanted = str(wanted_name).strip().lower()
+        for nm in names:
+            if str(nm).strip().lower() == wanted:
+                return str(nm)
+    except Exception as e:
+        _log("[DEBUG] _resolve_case_name failed:", repr(e))
+
+    return str(wanted_name)
+
 def _filter_bad_sap_names(names):
     bad = {"global", "", "none"}
     out = []
@@ -1021,7 +1038,7 @@ def _fix_base_nodes(model, nodes_df, tol=1e-3, fix=(1, 1, 1, 1, 1, 1)):
         model.PointObj.SetRestraint(n, restr)
 
 
-def _add_default_self_weight(model, pattern="Dead", mult=1.0):
+def _add_default_self_weight(model, pattern, mult=1.0):
     """Create a Dead load pattern with self-weight multiplier."""
     try:
         model.LoadPatterns.Add(pattern, 1, mult)  # 1 = Dead
@@ -1029,7 +1046,7 @@ def _add_default_self_weight(model, pattern="Dead", mult=1.0):
         pass
 
 
-def _run_analysis(model, soil_case=None):
+def _run_analysis(model, dead_case="Dead",soil_case=None):
     try:
         ret = model.Analyze.RunAnalysis()
         _log(f"RunAnalysis ret={ret}")
@@ -1041,9 +1058,9 @@ def _run_analysis(model, soil_case=None):
             pass
 
         try:
-            model.Results.Setup.SetCaseSelectedForOutput("Dead")
+            model.Results.Setup.SetCaseSelectedForOutput(str(dead_case))
         except Exception as e:
-            _log("[DEBUG] Select Dead failed:", repr(e))
+            _log("[DEBUG] Select Dead failed:", "case=", dead_case, "err=", repr(e))
 
         if soil_case:
             try:
@@ -2979,6 +2996,9 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # Extract the actual built model (what SAP really has)
         nodes, elems, areas = _extract_model_to_dfs(model)
 
+        DEAD_CASE = _resolve_case_name(model, "Dead")
+        _log("[DEBUG] Resolved DEAD case name:", DEAD_CASE)
+
         _log("[DEBUG] First 10 SAP area names:", _get_all_area_names(model)[:10])
 
         _log("[DEBUG] Extracted:", f"nodes={len(nodes)} elems={len(elems)} areas_df={0 if areas is None else len(areas)}")
@@ -2993,7 +3013,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             _fix_base_nodes(model, nodes)
 
         # ---- load patterns ----
-        _add_default_self_weight(model, "Dead", 1.0)
+        _add_default_self_weight(model, DEAD_CASE, 1.0)
 
         # ---- Soil actions: stiffness-based support + depth-based overburden ----
         soil_meta = None
@@ -3037,19 +3057,19 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             pass
 
         # Force run flags
-        _ensure_case_runs_in_analysis(model, "Dead")
+        _ensure_case_runs_in_analysis(model, DEAD_CASE)
         if soil:
             _ensure_case_runs_in_analysis(model, SOIL_CASE)
 
         # Run analysis (Dead + Soil case if defined)
-        _run_analysis(model, soil_case=(SOIL_CASE if soil else None))
+        _run_analysis(model, dead_case=DEAD_CASE, soil_case=(SOIL_CASE if soil else None))
 
         # ---- RESULTS OUTPUT SELECTION (CRITICAL) ----
         try:
             r0 = model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-            r1 = model.Results.Setup.SetCaseSelectedForOutput("Dead")
+            r1 = model.Results.Setup.SetCaseSelectedForOutput(DEAD_CASE)
             _log("[DEBUG] Results output selection retcodes:",
-                "Deselect=", r0, "SelectDead=", r1)
+                "Case=", DEAD_CASE, "Deselect=", r0, "SelectCase=", r1)
         except Exception as e:
             _log("[DEBUG] Results output selection failed:", repr(e))
 
@@ -3070,7 +3090,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # Default: output "Dead"
         try:
             model.Results.Setup.DeselectAllCasesAndCombosForOutput()
-            model.Results.Setup.SetCaseSelectedForOutput("Dead")
+            model.Results.Setup.SetCaseSelectedForOutput(DEAD_CASE)
             if soil:
                 model.Results.Setup.SetCaseSelectedForOutput(str(SOIL_CASE))
         except Exception:
@@ -3107,13 +3127,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
         import traceback
         try:
-            disp_df = _collect_joint_displacements(model, node_names, "Dead")
+            disp_df = _collect_joint_displacements(model, node_names, DEAD_CASE)
 
             _log("[DEBUG] SAP area objects (live):", len(_get_all_area_names(model)))
 
             _log("[DEBUG] JointDispl rows:", 0 if disp_df is None else len(disp_df))
 
-            force_df = _collect_frame_end_forces(model, frame_names, "Dead") if frame_names else pd.DataFrame()
+            force_df = _collect_frame_end_forces(model, frame_names, DEAD_CASE) if frame_names else pd.DataFrame()
         except Exception:
             _log("[Error] While collecting results:")
             _log(traceback.format_exc())
@@ -3136,7 +3156,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # --- PROBE: does per-area query return shell forces in this build? ---
         try:
             probe_area = area_names[0]
-            raw, api, args = _call_area_force_shell(model, probe_area, 1, debug=True)
+            raw, api, args = _call_area_force_shell(model, probe_area, 1, case_name=DEAD_CASE, debug=True)
             _fixA_log_raw_once(raw, tag=f"PerAreaProbe api={api} args={args} area={probe_area} it=1")
         except Exception as e:
             _log("[DEBUG] Per-area shell probe failed:", repr(e))
@@ -3148,7 +3168,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             # ================= DEAD shell results (Fix A) =================
             dead_rows, q_used, it_used = _collect_shell_forces_fixA(
                 model,
-                case_name="Dead",
+                case_name=DEAD_CASE,
                 wanted_area_names=area_names,
                 debug=DEBUG
             )
