@@ -1073,6 +1073,22 @@ def _run_analysis(model, dead_case="Dead", soil_case=None):
             except Exception as e:
                 _log("[DEBUG] Select soil case failed:", repr(e))
 
+        # ---- Force static result step selection ----
+        try:
+            model.Results.Setup.SetOptionDirectHist(0)
+        except Exception as e:
+            _log("[DEBUG] SetOptionDirectHist failed:", repr(e))
+
+        try:
+            model.Results.Setup.SetOptionModalHist(0)
+        except Exception as e:
+            _log("[DEBUG] SetOptionModalHist failed:", repr(e))
+
+        try:
+            model.Results.Setup.SetOptionMultiStepStatic(0)
+        except Exception as e:
+            _log("[DEBUG] SetOptionMultiStepStatic failed:", repr(e))
+
         return ret
     except Exception as e:
         _log(f"RunAnalysis raised: {e}")
