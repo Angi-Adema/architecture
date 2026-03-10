@@ -1048,6 +1048,13 @@ def _add_default_self_weight(model, pattern, mult=1.0):
 
 def _run_analysis(model, dead_case="Dead", soil_case=None):
     try:
+        # Build/refresh analysis model first
+        try:
+            ret_create = model.Analyze.CreateAnalysisModel()
+            _log("[DEBUG] CreateAnalysisModel ret=", ret_create)
+        except Exception as e:
+            _log("[DEBUG] CreateAnalysisModel failed:", repr(e))
+
         ret = model.Analyze.RunAnalysis()
         _log(f"RunAnalysis ret={ret}")
 
