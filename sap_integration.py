@@ -1046,12 +1046,18 @@ def _add_default_self_weight(model, pattern, mult=1.0):
         pass
 
 
-def _run_analysis(model, dead_case="Dead",soil_case=None):
+def _run_analysis(model, dead_case="Dead", soil_case=None):
     try:
         ret = model.Analyze.RunAnalysis()
         _log(f"RunAnalysis ret={ret}")
 
-        # Select cases for output (no SetOptionMode, no GetCaseSelectedForOutput)
+        # Unlock model so results API works
+        try:
+            model.SetModelIsLocked(False)
+            _log("[DEBUG] Model unlocked after analysis")
+        except Exception as e:
+            _log("[DEBUG] Unlock failed:", repr(e))
+
         try:
             model.Results.Setup.DeselectAllCasesAndCombosForOutput()
         except Exception:
@@ -1069,6 +1075,7 @@ def _run_analysis(model, dead_case="Dead",soil_case=None):
                 _log("[DEBUG] Select soil case failed:", repr(e))
 
         return ret
+
     except Exception as e:
         _log(f"RunAnalysis raised: {e}")
         raise
