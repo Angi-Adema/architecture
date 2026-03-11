@@ -968,6 +968,37 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
     sec_name, mat_name, thick_m = default_section
     area = model.AreaObj
 
+    def _get_point_xyz(pt_name):
+        try:
+            res = model.PointObj.GetCoordCartesian(str(pt_name), "Global")
+        except Exception:
+            res = model.PointObj.GetCoordCartesian(str(pt_name))
+
+        if isinstance(res, (list, tuple)) and len(res) >= 4:
+            _, x, y, z = res[:4]
+            return float(x), float(y), float(z)
+        elif isinstance(res, (list, tuple)) and len(res) >= 3:
+            x, y, z = res[:3]
+            return float(x), float(y), float(z)
+
+        raise RuntimeError(f"Could not get coordinates for point '{pt_name}'")
+
+    def _order_area_points_xy(point_names):
+        """
+        Reorder 3/4 point names around the XY centroid so SAP sees a clean perimeter
+        instead of a crossed polygon.
+        """
+        pts = []
+        for p in point_names:
+            x, y, z = _get_point_xyz(p)
+            pts.append((str(p), x, y, z))
+
+        cx = sum(t[1] for t in pts) / len(pts)
+        cy = sum(t[2] for t in pts) / len(pts)
+
+        pts.sort(key=lambda t: math.atan2(t[2] - cy, t[1] - cx))
+        return [t[0] for t in pts]
+
     def _ensure_material(mat: str):
         try:
             # 2 is typically concrete in CSI material type enums (varies by API build)
@@ -1081,6 +1112,10 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
             point_names = [p1, p2, p3]
         else:
             point_names = [p1, p2, p3, str(p4).strip()]
+
+        # Reorder points around perimeter to avoid crossed quads
+        point_names = _order_area_points_xy(point_names)
+        _log("[DEBUG] Ordered area points:", "area=", name, "pts=", point_names)
 
         n_pts = len(point_names)
 
