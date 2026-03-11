@@ -3189,7 +3189,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # --- PROBE: does per-area query return shell forces in this build? ---
         try:
             probe_area = area_names[0]
-            raw, api, args = _call_area_force_shell(model, probe_area, 1, case_name=DEAD_CASE, debug=True)
+            raw, api, args = _call_area_force_shell(model, probe_area, 1, case_name=DEAD_CASE, debug=False)
             _fixA_log_raw_once(raw, tag=f"PerAreaProbe api={api} args={args} area={probe_area} it=1")
         except Exception as e:
             _log("[DEBUG] Per-area shell probe failed:", repr(e))
@@ -3203,7 +3203,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 model,
                 case_name=DEAD_CASE,
                 wanted_area_names=area_names,
-                debug=DEBUG
+                debug=False
             )
             shell_dead_df = pd.DataFrame(dead_rows)
             _log("[DEBUG] FixA chosen (Dead):", "q=", repr(q_used), "it=", it_used, "rows=", len(shell_dead_df))
@@ -3217,7 +3217,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model,
                     case_name=SOIL_CASE,
                     wanted_area_names=area_names,
-                    debug=DEBUG
+                    debug=False
                 )
                 shell_soil_df = pd.DataFrame(soil_rows)
                 _log("[DEBUG] FixA chosen (SOIL_CASE):", "q=", repr(q_used2), "it=", it_used2, "rows=", len(shell_soil_df))
