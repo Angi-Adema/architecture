@@ -1111,7 +1111,7 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
 
                     # try to find a reasonable created-name candidate
                     nm = fallback_name
-                    for v in vals[:-1]:
+                    for v in reversed(vals[:-1]):
                         if isinstance(v, str) and v.strip():
                             nm = v.strip()
                             break
@@ -1123,7 +1123,7 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                     ret = int(vals[0])
 
                     nm = fallback_name
-                    for v in vals[1:]:
+                    for v in reversed(vals[1:]):
                         if isinstance(v, str) and v.strip():
                             nm = v.strip()
                             break
@@ -1134,15 +1134,31 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
 
         # Try multiple possible CSI AddByPoint orders/signatures
         add_candidates = [
-            # what you originally used
-            ("n_pts, pts, name, prop, csys", (n_pts, point_names, created_name, sec, "Global")),
-            ("n_pts, pts, name",             (n_pts, point_names, created_name)),
-            # alternate builds put name first
-            ("name, n_pts, pts, prop, csys", (created_name, n_pts, point_names, sec, "Global")),
-            ("name, n_pts, pts",             (created_name, n_pts, point_names)),
-            # some builds omit coord system
-            ("n_pts, pts, prop, name",       (n_pts, point_names, sec, created_name)),
-            ("n_pts, pts, prop",             (n_pts, point_names, sec)),
+            # Most likely CSI-style signature:
+            # (NumberPoints, PointNames, Name[out], PropName, UserName, CSys)
+            ("n_pts, pts, out_name_blank, prop, user_name, csys",
+             (n_pts, point_names, "", sec, created_name, "Global")),
+
+            # Same but without csys
+            ("n_pts, pts, out_name_blank, prop, user_name",
+             (n_pts, point_names, "", sec, created_name)),
+
+            # Same but blank user name
+            ("n_pts, pts, out_name_blank, prop",
+             (n_pts, point_names, "", sec)),
+
+            # Older/fallback guesses
+            ("n_pts, pts, name, prop, csys",
+             (n_pts, point_names, created_name, sec, "Global")),
+
+            ("n_pts, pts, name, prop",
+             (n_pts, point_names, created_name, sec)),
+
+            ("n_pts, pts, name",
+             (n_pts, point_names, created_name)),
+
+            ("n_pts, pts, prop",
+             (n_pts, point_names, sec)),
         ]
 
         for meth in ("AddByPoint", "AddByPoint_1", "AddByPoint_2"):
