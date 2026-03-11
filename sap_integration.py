@@ -1798,7 +1798,7 @@ def _fixA_log_raw_once(raw, tag="FixA"):
     except Exception as e:
         _log(f"[{tag}] raw inspect failed:", repr(e))
 
-def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0, 1, 2), debug=False):
+def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0, 1, 2), debug=DEBUG):
     """
     FIX A: Some SAP COM builds return empty arrays when querying a single area.
     Workaround: query ALL (or blank) once, then filter rows to the areas we want.
@@ -3326,7 +3326,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 model,
                 case_name=DEAD_CASE,
                 wanted_area_names=area_names,
-                debug=False
+                debug=DEBUG
             )
             shell_dead_df = pd.DataFrame(dead_rows)
             _log("[DEBUG] FixA chosen (Dead):", "q=", repr(q_used), "it=", it_used, "rows=", len(shell_dead_df))
@@ -3340,7 +3340,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     model,
                     case_name=SOIL_CASE,
                     wanted_area_names=area_names,
-                    debug=False
+                    debug=DEBUG
                 )
                 shell_soil_df = pd.DataFrame(soil_rows)
                 _log("[DEBUG] FixA chosen (SOIL_CASE):", "q=", repr(q_used2), "it=", it_used2, "rows=", len(shell_soil_df))
