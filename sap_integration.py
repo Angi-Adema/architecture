@@ -20,6 +20,9 @@ from collections import defaultdict
 # Debug throttling for shell property messages
 _SHELLPROP_OK_COUNT = 0
 
+# Debug throttling for COM result inspection
+_DEBUG_RESULT_DUMPS_LEFT = 4
+
 def _call_area_force_shell(model, selector, itemtype, case_name=None, debug=False):
     """
     Try multiple SAP Results APIs/signatures to retrieve shell forces.
@@ -76,6 +79,67 @@ def _call_area_force_shell(model, selector, itemtype, case_name=None, debug=Fals
                 continue
 
     return (None, None, None)
+
+def _collect_shell_forces_selected_only(model, case_name, wanted_area_names, debug=False):
+    rows = []
+
+    try:
+        model.SelectObj.ClearSelection()
+    except Exception:
+        pass
+
+    for an in wanted_area_names:
+        try:
+            model.AreaObj.SetSelected(str(an), True)
+        except Exception:
+            pass
+
+    try:
+        model.Results.Setup.DeselectAllCasesAndCombosForOutput()
+        model.Results.Setup.SetCaseSelectedForOutput(str(case_name))
+    except Exception:
+        pass
+
+    raw, api_used, args_used = _call_area_force_shell(model, "", 2, case_name=case_name, debug=debug)
+    parsed = _parse_area_force_shell_raw(raw)
+    if not parsed.get("ok"):
+        return []
+
+    asked_case = str(case_name).strip()
+    wanted = set(str(a).strip() for a in wanted_area_names)
+
+    nres = int(parsed["nres"])
+    for i in range(nres):
+        area_i = _norm_sap_text(parsed["Obj"][i])
+        lc_i = _norm_sap_text(parsed["LoadCase"][i])
+
+        if area_i and area_i not in wanted:
+            continue
+        if lc_i and not _same_case_name(lc_i, asked_case):
+            continue
+
+        f11 = float(parsed["F11"][i])
+        f22 = float(parsed["F22"][i])
+        f12 = float(parsed["F12"][i])
+        avg = 0.5 * (f11 + f22)
+        rad = ((0.5 * (f11 - f22)) ** 2 + (f12 ** 2)) ** 0.5
+
+        rows.append({
+            "Area": area_i,
+            "Elm": _norm_sap_text(parsed["Elm"][i]),
+            "Case": lc_i if lc_i else asked_case,
+            "StepType": _norm_sap_text(parsed["StepType"][i]),
+            "StepNum": parsed["StepNum"][i],
+            "F11": f11, "F22": f22, "F12": f12,
+            "Fmax": avg + rad,
+            "Fmin": avg - rad,
+            "M11": parsed["M11"][i], "M22": parsed["M22"][i], "M12": parsed["M12"][i],
+            "V13": parsed["V13"][i], "V23": parsed["V23"][i],
+            "ItemTypeUsed": 2,
+            "APIUsed": f"SelectedOnly:{api_used}" if api_used else "SelectedOnly:UnknownAPI",
+        })
+
+    return rows
 
 def _sap_get_name_list(res):
     """
@@ -1024,19 +1088,55 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
         created = False
         last_err = None
 
+        def _extract_add_area_success(res, fallback_name):
+            """
+            Accept only true success.
+            Common shapes:
+              ret
+              (ret, name)
+              (name, ret)
+            """
+            if isinstance(res, (int, float)):
+                return (int(res) == 0, fallback_name)
+
+            if isinstance(res, (list, tuple)):
+                vals = list(res)
+
+                # (ret, name)
+                if len(vals) >= 2 and isinstance(vals[0], (int, float)):
+                    ok = (int(vals[0]) == 0)
+                    nm = str(vals[1]).strip() if vals[1] not in (None, "") else fallback_name
+                    return (ok, nm)
+
+                # (name, ret)
+                if len(vals) >= 2 and isinstance(vals[-1], (int, float)):
+                    ok = (int(vals[-1]) == 0)
+                    nm = str(vals[0]).strip() if vals[0] not in (None, "") else fallback_name
+                    return (ok, nm)
+
+            return (False, fallback_name)
+
         for meth in ("AddByPoint", "AddByPoint_1", "AddByPoint_2"):
             m = getattr(area, meth, None)
             if m is None:
                 continue
             try:
-                ret = m(n_pts, point_names, created_name, sec, "Global")
-                created = True
-                break
+                res = m(n_pts, point_names, created_name, sec, "Global")
+                ok, nm = _extract_add_area_success(res, created_name)
+                if ok:
+                    created = True
+                    created_name = nm
+                    break
+                last_err = RuntimeError(f"{meth} returned nonzero/unsuccessful result: {repr(res)}")
             except TypeError:
                 try:
-                    ret = m(n_pts, point_names, created_name)
-                    created = True
-                    break
+                    res = m(n_pts, point_names, created_name)
+                    ok, nm = _extract_add_area_success(res, created_name)
+                    if ok:
+                        created = True
+                        created_name = nm
+                        break
+                    last_err = RuntimeError(f"{meth} returned nonzero/unsuccessful result: {repr(res)}")
                 except Exception as e:
                     last_err = e
             except Exception as e:
@@ -1173,6 +1273,11 @@ def _case_has_any_joint_displ_output(model, case_name, vertical_axis="Z"):
             except Exception:
                 out = model.Results.JointDispl(str(joint_name), 0, case_name)
 
+            _debug_dump_result_call_once(
+                f"JointDisplProbe case={case_name} joint={joint_name}",
+                out
+            )
+
             ret, n_header, base = _sap_results_header(out)
             if base is None:
                 return 0
@@ -1261,27 +1366,34 @@ def _sap_retcode(x):
 
     return None
 
+def _norm_sap_text(x):
+    if x is None:
+        return ""
+    s = str(x).strip()
+    if s.lower() in ("none", "nan"):
+        return ""
+    return s
+
+def _same_case_name(a, b):
+    return _norm_sap_text(a).lower() == _norm_sap_text(b).lower()
+
 def _parse_area_force_shell_raw(raw):
-    """
-    Parse RESULTS AreaForceShell(...) raw COM return into named arrays.
-    Supports both shapes:
-      A) (ret, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23, ..., ret?)
-      B) (nres, Obj, Elm, ..., ret)
-    Returns dict with keys:
-      ok, nres, Obj, Elm, LoadCase, StepType, StepNum, F11, F22, F12, M11, M22, M12, V13, V23
-    """
     out = {"ok": False, "nres": 0}
-    if not isinstance(raw, (list, tuple)) or len(raw) < 10:
+
+    if not isinstance(raw, (list, tuple)):
+        out["reason"] = "not_tuple"
         return out
 
     r = list(raw)
-
-    # Determine where arrays start (base)
-    ret, n_header, base = _sap_results_header(r)
-    if base is None:
+    if len(r) < 6:
+        out["reason"] = f"too_short_len_{len(r)}"
         return out
 
-    # Infer nres from actual Obj array length (most reliable)
+    ret, n_header, base = _sap_results_header(r)
+    if base is None:
+        out["reason"] = "no_base"
+        return out
+
     obj_raw = r[base + 0] if len(r) > base + 0 else None
     try:
         n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
@@ -1290,43 +1402,32 @@ def _parse_area_force_shell_raw(raw):
 
     nres = int(n_actual or (n_header or 0))
     if nres <= 0:
+        out["reason"] = "zero_rows"
+        out["ret"] = ret
+        out["base"] = base
+        out["len"] = len(r)
         return out
-    
-    # sanity: ensure we have at least base+12
-    if (base + 12) >= len(r):
-        return {"ok": False, "nres": nres, "reason": "not_enough_slots", "len": len(r), "base": base}
 
     def _get(i):
         return r[i] if (i is not None and i < len(r)) else None
 
-    # Layout starting at base (matches what you already use in _collect_shell_forces_moments)
-    Obj      = _as_seq(_get(base + 0),  nres)
-    Elm      = _as_seq(_get(base + 1),  nres)
-    LoadCase = _as_seq(_get(base + 2),  nres)
-    StepType = _as_seq(_get(base + 3),  nres)
-    StepNum  = _as_seq(_get(base + 4),  nres)
+    slots = {
+        "Obj":      _as_seq(_get(base + 0),  nres),
+        "Elm":      _as_seq(_get(base + 1),  nres),
+        "LoadCase": _as_seq(_get(base + 2),  nres),
+        "StepType": _as_seq(_get(base + 3),  nres),
+        "StepNum":  _as_seq(_get(base + 4),  nres),
+        "F11":      _as_seq(_get(base + 5),  nres),
+        "F22":      _as_seq(_get(base + 6),  nres),
+        "F12":      _as_seq(_get(base + 7),  nres),
+        "M11":      _as_seq(_get(base + 8),  nres),
+        "M22":      _as_seq(_get(base + 9),  nres),
+        "M12":      _as_seq(_get(base + 10), nres),
+        "V13":      _as_seq(_get(base + 11), nres),
+        "V23":      _as_seq(_get(base + 12), nres),
+    }
 
-    F11 = _as_seq(_get(base + 5),  nres)
-    F22 = _as_seq(_get(base + 6),  nres)
-    F12 = _as_seq(_get(base + 7),  nres)
-    M11 = _as_seq(_get(base + 8),  nres)
-    M22 = _as_seq(_get(base + 9),  nres)
-    M12 = _as_seq(_get(base + 10), nres)
-    V13 = _as_seq(_get(base + 11), nres)
-    V23 = _as_seq(_get(base + 12), nres)
-
-    out.update({
-        "ok": True,
-        "nres": nres,
-        "Obj": Obj,
-        "Elm": Elm,
-        "LoadCase": LoadCase,
-        "StepType": StepType,
-        "StepNum": StepNum,
-        "F11": F11, "F22": F22, "F12": F12,
-        "M11": M11, "M22": M22, "M12": M12,
-        "V13": V13, "V23": V23,
-    })
+    out.update({"ok": True, "nres": nres, **slots})
     return out
 
 
@@ -1334,20 +1435,22 @@ def _collect_joint_displacements_per_node(model, node_names, case="Dead"):
     rows = []
     _select_case(model, case)
 
-    # de-dupe node list (prevents accidental repeats)
     seen = set()
-    node_names = [n for n in node_names if not (str(n) in seen or seen.add(str(n)))]
+    node_names = [str(n).strip() for n in node_names if not (str(n).strip() in seen or seen.add(str(n).strip()))]
 
     def _call_jointdispl(nm):
-        # ItemTypeElm = 0 (ObjectElm) is correct for a single joint name
         try:
             return model.Results.JointDispl(str(nm), 0)
         except Exception:
             return model.Results.JointDispl(str(nm), 0, str(case))
 
+    debug_hits_left = 3
+
     for nname in node_names:
+        asked = str(nname).strip()
+
         try:
-            out = _call_jointdispl(nname)
+            out = _call_jointdispl(asked)
         except Exception:
             continue
 
@@ -1358,25 +1461,21 @@ def _collect_joint_displacements_per_node(model, node_names, case="Dead"):
         if base is None:
             continue
 
-        # --- IMPORTANT: infer n from actual array length, not header ---
-        # Obj should be the first array at out[base+0]
-        obj_raw = out[base + 0] if (len(out) > base + 0) else None
+        obj_raw = out[base + 0] if len(out) > base + 0 else None
         try:
             n_actual = len(list(obj_raw)) if isinstance(obj_raw, (list, tuple)) else 0
         except Exception:
             n_actual = 0
 
-        # pick the most trustworthy n
         n = int(n_actual or (n_header or 0))
         if n <= 0:
             continue
 
-        # Layout starting at base:
-        Obj      = _as_seq(out[base + 0], n)
-        Elm      = _as_seq(out[base + 1], n) if len(out) > base + 1 else [None] * n
-        LoadCase = _as_seq(out[base + 2], n) if len(out) > base + 2 else [None] * n
-        StepType = _as_seq(out[base + 3], n) if len(out) > base + 3 else [None] * n
-        StepNum  = _as_seq(out[base + 4], n) if len(out) > base + 4 else [None] * n
+        Obj      = _as_seq(out[base + 0],  n)
+        Elm      = _as_seq(out[base + 1],  n) if len(out) > base + 1 else [None] * n
+        LoadCase = _as_seq(out[base + 2],  n) if len(out) > base + 2 else [None] * n
+        StepType = _as_seq(out[base + 3],  n) if len(out) > base + 3 else [None] * n
+        StepNum  = _as_seq(out[base + 4],  n) if len(out) > base + 4 else [None] * n
 
         U1 = _as_seq(out[base + 5],  n) if len(out) > base + 5 else [None] * n
         U2 = _as_seq(out[base + 6],  n) if len(out) > base + 6 else [None] * n
@@ -1385,45 +1484,52 @@ def _collect_joint_displacements_per_node(model, node_names, case="Dead"):
         R2 = _as_seq(out[base + 9],  n) if len(out) > base + 9 else [None] * n
         R3 = _as_seq(out[base + 10], n) if len(out) > base + 10 else [None] * n
 
-        # --- IMPORTANT: only keep rows that match the joint we asked for ---
-        asked = str(nname).strip()
+        if DEBUG and debug_hits_left > 0:
+            _log("[DEBUG] JointDispl parsed:",
+                 "asked=", asked, "case=", case, "base=", base, "n=", n,
+                 "obj0=", repr(Obj[:3]), "lc0=", repr(LoadCase[:3]),
+                 "step0=", repr(StepType[:3]))
+            debug_hits_left -= 1
+
+        kept_any = False
+
         for i in range(n):
-            obj_i = str(Obj[i]).strip()
-            if obj_i != asked:
+            obj_i = _norm_sap_text(Obj[i])
+            lc_i = _norm_sap_text(LoadCase[i])
+
+            # Accept blank object names by substituting the requested joint
+            node_i = obj_i if obj_i else asked
+
+            # If SAP returns an object name and it is different, skip it
+            if obj_i and obj_i != asked:
                 continue
 
-            # also keep only the selected case name if it exists in results
-            lc = str(LoadCase[i]).strip()
-            if lc and case and lc != str(case):
+            # Case filter: only reject when SAP explicitly returned a different case
+            if lc_i and not _same_case_name(lc_i, case):
                 continue
 
             rows.append({
-                "Node": obj_i,
-                "Case": lc,
-                "StepType": str(StepType[i]),
+                "Node": node_i,
+                "Case": lc_i if lc_i else str(case),
+                "StepType": _norm_sap_text(StepType[i]),
                 "StepNum": StepNum[i],
                 "UX": U1[i], "UY": U2[i], "UZ": U3[i],
                 "RX": R1[i], "RY": R2[i], "RZ": R3[i],
             })
+            kept_any = True
 
-    return pd.DataFrame(rows)
+        if DEBUG and not kept_any and n > 0:
+            _log("[DEBUG] JointDispl all rows filtered:",
+                 "asked=", asked, "case=", case,
+                 "obj_sample=", repr(Obj[:5]), "lc_sample=", repr(LoadCase[:5]))
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.drop_duplicates(subset=["Node", "Case", "StepType", "StepNum"], keep="last").reset_index(drop=True)
+    return df
 
 def _collect_joint_displacements(model, node_names=None, case="Dead"):
-    """
-    Robust collector:
-    1) Try single-call "all joints" query (fast)
-    2) If it returns zero, fall back to per-joint calls (slow but reliable)
-    """
     _select_case(model, case)
-
-    # ---------- Attempt 1: single-call ----------
-    out = None
-    for joint_name in ("", "ALL"):
-        try:
-            out = model.Results.JointDispl(str(joint_name), 0)
-            break
-        except Exception:
-            continue
 
     def _parse_jointdispl_out(out_obj):
         if not isinstance(out_obj, (list, tuple)):
@@ -1461,20 +1567,20 @@ def _collect_joint_displacements(model, node_names=None, case="Dead"):
 
         rows = []
         for i in range(n):
-            node = str(Obj[i]).strip()
+            node = _norm_sap_text(Obj[i])
+            lc = _norm_sap_text(LoadCase[i])
+
             if not node:
                 continue
             if keep is not None and node not in keep:
                 continue
-
-            lc = str(LoadCase[i]).strip()
-            if case and lc and lc != str(case):
+            if lc and not _same_case_name(lc, case):
                 continue
 
             rows.append({
                 "Node": node,
-                "Case": lc,
-                "StepType": str(StepType[i]).strip(),
+                "Case": lc if lc else str(case),
+                "StepType": _norm_sap_text(StepType[i]),
                 "StepNum": StepNum[i],
                 "UX": U1[i], "UY": U2[i], "UZ": U3[i],
                 "RX": R1[i], "RY": R2[i], "RZ": R3[i],
@@ -1485,11 +1591,18 @@ def _collect_joint_displacements(model, node_names=None, case="Dead"):
             df = df.drop_duplicates(subset=["Node", "Case", "StepType", "StepNum"], keep="last").reset_index(drop=True)
         return df
 
-    df = _parse_jointdispl_out(out) if out is not None else pd.DataFrame()
-    if not df.empty:
-        return df
+    # Try global/all-joints query first
+    out = None
+    for joint_name in ("", "ALL"):
+        try:
+            out = model.Results.JointDispl(str(joint_name), 0)
+            df = _parse_jointdispl_out(out)
+            if not df.empty:
+                return df
+        except Exception:
+            continue
 
-    # ---------- Attempt 2: fallback per-joint ----------
+    # Fallback to per-joint collection
     if node_names is None:
         node_names = _get_all_point_names(model)
 
@@ -1798,6 +1911,96 @@ def _fixA_log_raw_once(raw, tag="FixA"):
     except Exception as e:
         _log(f"[{tag}] raw inspect failed:", repr(e))
 
+def _debug_dump_result_call(tag, raw, max_items=18):
+    """
+    Dump the exact COM return shape for one SAP results call.
+    This is the fastest way to learn what this SAP build is actually returning.
+    """
+    if not DEBUG:
+        return
+
+    try:
+        if raw is None:
+            _log(f"[{tag}] raw=None")
+            return
+
+        if not isinstance(raw, (list, tuple)):
+            _log(f"[{tag}] raw_type={type(raw).__name__} raw={repr(raw)}")
+            return
+
+        _log(f"[{tag}] tuple_len={len(raw)}")
+
+        limit = min(len(raw), max_items)
+        for i in range(limit):
+            x = raw[i]
+
+            if isinstance(x, (list, tuple)):
+                try:
+                    x_list = list(x)
+                    preview = x_list[:3]
+                    _log(
+                        f"[{tag}] slot[{i}] type={type(x).__name__} "
+                        f"len={len(x_list)} preview={repr(preview)}"
+                    )
+                except Exception as e:
+                    _log(f"[{tag}] slot[{i}] seq-inspect-failed err={repr(e)}")
+            else:
+                _log(f"[{tag}] slot[{i}] type={type(x).__name__} value={repr(x)}")
+
+        if len(raw) > max_items:
+            _log(f"[{tag}] ... truncated after {max_items} slots ...")
+
+    except Exception as e:
+        _log(f"[{tag}] debug dump failed: {repr(e)}")
+
+def _debug_dump_result_call_once(tag, raw, max_items=18):
+    global _DEBUG_RESULT_DUMPS_LEFT
+
+    if not DEBUG or _DEBUG_RESULT_DUMPS_LEFT <= 0:
+        return
+
+    _DEBUG_RESULT_DUMPS_LEFT -= 1
+
+    _debug_dump_result_call(tag, raw, max_items=max_items)
+
+def _debug_selected_area_force_shell(model, case_name, sample_area_names):
+    """
+    Diagnostic only:
+    Select a few areas, then ask for shell forces using a blank selector.
+    Some SAP builds only return shell results for selected objects/groups.
+    """
+    if not DEBUG:
+        return
+
+    try:
+        model.SelectObj.ClearSelection()
+    except Exception:
+        pass
+
+    picked = []
+    for an in (sample_area_names or [])[:5]:
+        try:
+            model.AreaObj.SetSelected(str(an), True)
+            picked.append(str(an))
+        except Exception:
+            pass
+
+    _log("[DEBUG] Selected shell probe picked areas:", picked)
+
+    for it in (0, 1, 2):
+        raw, api_used, args_used = _call_area_force_shell(
+            model,
+            "",
+            it,
+            case_name=case_name,
+            debug=False
+        )
+
+        _debug_dump_result_call_once(
+            f"SelectedAreaForceShell case={case_name} api={api_used} it={it}",
+            raw
+        )
+
 def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0, 1, 2), debug=DEBUG):
     """
     FIX A: Some SAP COM builds return empty arrays when querying a single area.
@@ -1827,6 +2030,12 @@ def _collect_shell_forces_fixA(model, case_name, wanted_area_names, itemtypes=(0
     for q in query_variants:
         for it in itemtypes:
             raw, api_used, args_used = _call_area_force_shell(model, q, it, case_name=case_name, debug=debug)
+
+            _debug_dump_result_call_once(
+                f"AreaForceShell case={case_name} api={api_used} q={repr(q)} it={it}",
+                raw
+            )
+
             if raw is None:
                 # Throttled raw log (helps see "None" causes too)
                 _fixA_log_raw_once(raw, tag=f"FixA(parse_fail api={api_used} args={args_used} q={repr(q)} it={it})")
@@ -3309,6 +3518,13 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
         # --- Shell results (areas) ---
         area_names = _get_all_area_names(model)
 
+        try:
+            _debug_selected_area_force_shell(model, DEAD_CASE, area_names)
+            if soil:
+                _debug_selected_area_force_shell(model, SOIL_CASE, area_names)
+        except Exception as e:
+            _log("[DEBUG] Selected shell probe failed:", repr(e))
+
         # --- PROBE: does per-area query return shell forces in this build? ---
         try:
             probe_area = area_names[0]
@@ -3328,6 +3544,16 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                 wanted_area_names=area_names,
                 debug=False
             )
+
+            if not dead_rows:
+                dead_rows = _collect_shell_forces_selected_only(
+                    model,
+                    case_name=DEAD_CASE,
+                    wanted_area_names=area_names,
+                    debug=False
+                )
+                q_used = "<selected_only>"
+                it_used = 2
             shell_dead_df = pd.DataFrame(dead_rows)
             _log("[DEBUG] FixA chosen (Dead):", "q=", repr(q_used), "it=", it_used, "rows=", len(shell_dead_df))
 
@@ -3342,6 +3568,16 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
                     wanted_area_names=area_names,
                     debug=False
                 )
+
+                if not soil_rows:
+                    soil_rows = _collect_shell_forces_selected_only(
+                        model,
+                        case_name=SOIL_CASE,
+                        wanted_area_names=area_names,
+                        debug=False
+                    )
+                    q_used2 = "<selected_only>"
+                    it_used2 = 2
                 shell_soil_df = pd.DataFrame(soil_rows)
                 _log("[DEBUG] FixA chosen (SOIL_CASE):", "q=", repr(q_used2), "it=", it_used2, "rows=", len(shell_soil_df))
 
