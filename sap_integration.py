@@ -17,6 +17,9 @@ import ctypes
 import datetime as _dt
 from collections import defaultdict
 
+# Debug throttling for shell property messages
+_SHELLPROP_OK_COUNT = 0
+
 def _call_area_force_shell(model, selector, itemtype, case_name=None, debug=False):
     """
     Try multiple SAP Results APIs/signatures to retrieve shell forces.
@@ -910,7 +913,16 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                 return False
             try:
                 fn(*args)
-                _log("[DEBUG] ShellProp OK via", fn_name, "args=", args)
+
+                global _SHELLPROP_OK_COUNT
+
+                _SHELLPROP_OK_COUNT += 1
+
+                if _SHELLPROP_OK_COUNT <= 3:
+                    _log("ShellProp OK via", fn_name, "args=", args)
+                elif _SHELLPROP_OK_COUNT == 4:
+                    _log("(suppressing further ShellProp success logs...)")
+
                 return True
             except Exception as e:
                 if sig_mismatch(e):
