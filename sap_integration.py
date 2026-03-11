@@ -1134,20 +1134,38 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
 
         # Try multiple possible CSI AddByPoint orders/signatures
         add_candidates = [
-            # Most likely CSI-style signature:
-            # (NumberPoints, PointNames, Name[out], PropName, UserName, CSys)
+            # Most likely for this build: no n_pts argument
+            ("pts, out_name_blank, prop, user_name, csys",
+             (point_names, "", sec, created_name, "Global")),
+
+            ("pts, out_name_blank, prop, user_name",
+             (point_names, "", sec, created_name)),
+
+            ("pts, out_name_blank, prop",
+             (point_names, "", sec)),
+
+            ("pts, name, prop, csys",
+             (point_names, created_name, sec, "Global")),
+
+            ("pts, name, prop",
+             (point_names, created_name, sec)),
+
+            ("pts, name",
+             (point_names, created_name)),
+
+            ("pts, prop",
+             (point_names, sec)),
+
+            # Keep count-based fallbacks after the no-count versions
             ("n_pts, pts, out_name_blank, prop, user_name, csys",
              (n_pts, point_names, "", sec, created_name, "Global")),
 
-            # Same but without csys
             ("n_pts, pts, out_name_blank, prop, user_name",
              (n_pts, point_names, "", sec, created_name)),
 
-            # Same but blank user name
             ("n_pts, pts, out_name_blank, prop",
              (n_pts, point_names, "", sec)),
 
-            # Older/fallback guesses
             ("n_pts, pts, name, prop, csys",
              (n_pts, point_names, created_name, sec, "Global")),
 
@@ -1168,6 +1186,7 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
 
             for sig_label, args in add_candidates:
                 try:
+                    _log("[DEBUG] Trying area create:", "meth=", meth, "sig=", sig_label, "args=", args)
                     res = m(*args)
                     ok, nm, retcode = _extract_add_area_success(res, created_name)
 
