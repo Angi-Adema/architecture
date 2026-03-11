@@ -631,6 +631,7 @@ def run():
             "axis": axis_var.get(),
             "gamma_Npm3": float(gamma_soil_var.get()),
             "burial_depth_vertex_m": float(burial_depth_vertex_var.get()),
+            "kz_override_Npm3": 21.74e6,   # replace with your spreadsheet's current kz
         }
 
         material_spec = {
