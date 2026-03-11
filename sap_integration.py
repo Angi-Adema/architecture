@@ -1090,57 +1090,94 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
 
         def _extract_add_area_success(res, fallback_name):
             """
-            Accept only true success.
-            Common shapes:
+            Normalize AddByPoint-style returns.
+            Accept success only when ret == 0.
+
+            Common shapes seen across CSI COM builds:
               ret
               (ret, name)
               (name, ret)
+              (..., ret)
             """
             if isinstance(res, (int, float)):
-                return (int(res) == 0, fallback_name)
+                return (int(res) == 0, fallback_name, int(res))
 
-            if isinstance(res, (list, tuple)):
+            if isinstance(res, (list, tuple)) and len(res) > 0:
                 vals = list(res)
 
-                # (ret, name)
-                if len(vals) >= 2 and isinstance(vals[0], (int, float)):
-                    ok = (int(vals[0]) == 0)
-                    nm = str(vals[1]).strip() if vals[1] not in (None, "") else fallback_name
-                    return (ok, nm)
+                # trailing ret is most common in odd COM wrappers
+                if isinstance(vals[-1], (int, float)):
+                    ret = int(vals[-1])
 
-                # (name, ret)
-                if len(vals) >= 2 and isinstance(vals[-1], (int, float)):
-                    ok = (int(vals[-1]) == 0)
-                    nm = str(vals[0]).strip() if vals[0] not in (None, "") else fallback_name
-                    return (ok, nm)
+                    # try to find a reasonable created-name candidate
+                    nm = fallback_name
+                    for v in vals[:-1]:
+                        if isinstance(v, str) and v.strip():
+                            nm = v.strip()
+                            break
 
-            return (False, fallback_name)
+                    return (ret == 0, nm, ret)
+
+                # leading ret
+                if isinstance(vals[0], (int, float)):
+                    ret = int(vals[0])
+
+                    nm = fallback_name
+                    for v in vals[1:]:
+                        if isinstance(v, str) and v.strip():
+                            nm = v.strip()
+                            break
+
+                    return (ret == 0, nm, ret)
+
+            return (False, fallback_name, None)
+
+        # Try multiple possible CSI AddByPoint orders/signatures
+        add_candidates = [
+            # what you originally used
+            ("n_pts, pts, name, prop, csys", (n_pts, point_names, created_name, sec, "Global")),
+            ("n_pts, pts, name",             (n_pts, point_names, created_name)),
+            # alternate builds put name first
+            ("name, n_pts, pts, prop, csys", (created_name, n_pts, point_names, sec, "Global")),
+            ("name, n_pts, pts",             (created_name, n_pts, point_names)),
+            # some builds omit coord system
+            ("n_pts, pts, prop, name",       (n_pts, point_names, sec, created_name)),
+            ("n_pts, pts, prop",             (n_pts, point_names, sec)),
+        ]
 
         for meth in ("AddByPoint", "AddByPoint_1", "AddByPoint_2"):
             m = getattr(area, meth, None)
             if m is None:
                 continue
-            try:
-                res = m(n_pts, point_names, created_name, sec, "Global")
-                ok, nm = _extract_add_area_success(res, created_name)
-                if ok:
-                    created = True
-                    created_name = nm
-                    break
-                last_err = RuntimeError(f"{meth} returned nonzero/unsuccessful result: {repr(res)}")
-            except TypeError:
+
+            for sig_label, args in add_candidates:
                 try:
-                    res = m(n_pts, point_names, created_name)
-                    ok, nm = _extract_add_area_success(res, created_name)
+                    res = m(*args)
+                    ok, nm, retcode = _extract_add_area_success(res, created_name)
+
                     if ok:
                         created = True
                         created_name = nm
+                        _log("[DEBUG] Area created:",
+                             "meth=", meth,
+                             "sig=", sig_label,
+                             "name=", created_name,
+                             "ret=", retcode)
                         break
-                    last_err = RuntimeError(f"{meth} returned nonzero/unsuccessful result: {repr(res)}")
+
+                    last_err = RuntimeError(
+                        f"{meth} sig={sig_label} returned unsuccessful result: {repr(res)}"
+                    )
+
+                except TypeError as e:
+                    last_err = e
+                    continue
                 except Exception as e:
                     last_err = e
-            except Exception as e:
-                last_err = e
+                    continue
+
+            if created:
+                break
 
         if not created:
             raise RuntimeError(
