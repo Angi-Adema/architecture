@@ -143,6 +143,23 @@ def _resolve_case_name(model, wanted_name):
 
     return str(wanted_name)
 
+def _resolve_pattern_name(model, wanted_name):
+    """
+    Return the actual SAP load pattern name matching wanted_name, ignoring case.
+    Falls back to wanted_name if no match is found.
+    """
+    try:
+        raw = model.LoadPatterns.GetNameList()
+        names = _sap_get_name_list(raw)
+        wanted = str(wanted_name).strip().lower()
+        for nm in names:
+            if str(nm).strip().lower() == wanted:
+                return str(nm)
+    except Exception as e:
+        _log("resolve_pattern_name failed:", repr(e))
+
+    return str(wanted_name)
+
 def _filter_bad_sap_names(names):
     bad = {"global", "", "none"}
     out = []
@@ -2541,32 +2558,89 @@ def _set_joint_vertical_spring(model, joint_name, k_vert_Npm, vertical_axis="Z",
         return False
 
 
-def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical_axis="Z"):
+def _assign_soil_stiffness_as_base_springs(
+    model,
+    nodes_df,
+    E_soil_mpa,
+    vertical_axis="Z",
+    burial_depth_vertex_m=1.0,
+    kz_override_Npm3=None,
+):
     """
-    Use E_soil (MPa) to create Winkler-like support springs at base joints.
+    Assign vertical Winkler springs to the ACTUAL SAP joints that are below grade.
 
-    Simple model assumption:
-      E_soil(Pa) = E_soil_mpa * 1e6
-      footprint area A from convex hull of base nodes in XY
-      L = sqrt(A) (clamped) length scale
-      k_subgrade (N/m^3) = E_soil / L
-      Atrib = A / n_base_nodes
-      K_joint (N/m) = k_subgrade * Atrib
+    For a buried shell:
+      - determine grade = vertex elevation + burial depth
+      - assign springs to all joints with positive depth below grade
+
+    If kz_override_Npm3 is provided, use that directly as the subgrade modulus.
+    Otherwise fall back to the simplified E/L estimate.
     """
     E_pa = float(E_soil_mpa) * 1e6
-    if E_pa <= 0:
-        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
+    if E_pa <= 0 and kz_override_Npm3 is None:
+        return {
+            "assigned": 0,
+            "E_pa": E_pa,
+            "k_subgrade": None,
+            "footprint_area": None,
+            "L": None,
+            "K_joint": None,
+            "total_joints": 0,
+            "buried_joints": 0,
+        }
 
-    zmin = float(nodes_df["Z"].min())
-    TOL_Z = 1e-3
-    
-    base = nodes_df.loc[(nodes_df["Z"] - zmin).abs() <= TOL_Z, ["Name", "X", "Y"]].copy()
-    if base.empty:
-        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": None, "L": None}
+    joints = list(_iter_all_point_coords(model))
+    if not joints:
+        return {
+            "assigned": 0,
+            "E_pa": E_pa,
+            "k_subgrade": None,
+            "footprint_area": None,
+            "L": None,
+            "K_joint": None,
+            "total_joints": 0,
+            "buried_joints": 0,
+        }
 
-    pts = np.unique(base[["X", "Y"]].astype(float).values, axis=0)
+    ax = (vertical_axis or "Z").upper()
+    axis_index = 2 if ax == "Z" else (1 if ax == "Y" else 0)
+
+    # Grade plane is above the vertex by the burial depth
+    z_vertex = max((x, y, z)[axis_index] for _, x, y, z in joints)
+    z_grade = z_vertex + float(burial_depth_vertex_m)
+
+    buried = []
+    for nm, x, y, z in joints:
+        elev = (x, y, z)[axis_index]
+        depth = z_grade - elev
+        if depth > 1e-9:
+            buried.append((nm, x, y, z, depth))
+
+    if not buried:
+        return {
+            "assigned": 0,
+            "E_pa": E_pa,
+            "k_subgrade": None,
+            "footprint_area": None,
+            "L": None,
+            "K_joint": None,
+            "total_joints": len(joints),
+            "buried_joints": 0,
+        }
+
+    # Footprint from XY convex hull of all joints
+    pts = np.unique(np.array([[x, y] for _, x, y, _ in joints], dtype=float), axis=0)
     if len(pts) < 3:
-        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": 0.0, "L": None}
+        return {
+            "assigned": 0,
+            "E_pa": E_pa,
+            "k_subgrade": None,
+            "footprint_area": 0.0,
+            "L": None,
+            "K_joint": None,
+            "total_joints": len(joints),
+            "buried_joints": len(buried),
+        }
 
     pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
 
@@ -2578,11 +2652,13 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
         while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
             lower.pop()
         lower.append(tuple(p))
+
     upper = []
     for p in reversed(pts):
         while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
             upper.pop()
         upper.append(tuple(p))
+
     hull = lower[:-1] + upper[:-1]
 
     area2 = 0.0
@@ -2592,19 +2668,49 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
         area2 += x1 * y2 - x2 * y1
     A = abs(area2) * 0.5
 
-    n_base = len(base)
-    if A <= 0 or n_base <= 0:
-        return {"assigned": 0, "E_pa": E_pa, "k_subgrade": None, "footprint_area": A, "L": None}
+    if A <= 0:
+        return {
+            "assigned": 0,
+            "E_pa": E_pa,
+            "k_subgrade": None,
+            "footprint_area": A,
+            "L": None,
+            "K_joint": None,
+            "total_joints": len(joints),
+            "buried_joints": len(buried),
+        }
 
     L = max(0.5, (A ** 0.5))
-    k_subgrade = E_pa / L
-    Atrib = A / float(n_base)
+
+    if kz_override_Npm3 is not None:
+        k_subgrade = float(kz_override_Npm3)
+    else:
+        k_subgrade = E_pa / L  # fallback simplified estimate
+
+    # Uniform tributary area per buried joint
+    Atrib = A / float(len(buried))
     K_joint = k_subgrade * Atrib
 
     assigned = 0
-    for nm in base["Name"].astype(str).tolist():
+    sample_assigned = []
+
+    for nm, _x, _y, _z, _depth in buried:
         if _set_joint_vertical_spring(model, nm, K_joint, vertical_axis=vertical_axis, replace=True):
             assigned += 1
+            if len(sample_assigned) < 20:
+                sample_assigned.append(str(nm))
+
+    _log(
+        "Springs assigned:",
+        "assigned=", assigned,
+        "total_joints=", len(joints),
+        "buried_joints=", len(buried),
+        "K_joint=", K_joint,
+        "k_subgrade=", k_subgrade,
+        "z_vertex=", z_vertex,
+        "z_grade=", z_grade,
+    )
+    _log("Sample spring joints:", sample_assigned)
 
     return {
         "assigned": assigned,
@@ -2612,7 +2718,11 @@ def _assign_soil_stiffness_as_base_springs(model, nodes_df, E_soil_mpa, vertical
         "k_subgrade": k_subgrade,
         "footprint_area": A,
         "L": L,
-        "K_joint": K_joint
+        "K_joint": K_joint,
+        "total_joints": len(joints),
+        "buried_joints": len(buried),
+        "z_vertex": z_vertex,
+        "z_grade": z_grade,
     }
 
 def _assign_constant_overburden_to_all_areas(
@@ -2686,74 +2796,84 @@ def _assign_depth_based_overburden_to_all_areas(
     except Exception as e:
         _log("[DEBUG] StaticLinear.SetCase EXC:", case_name, "err=", repr(e))
 
+    actual_pattern = _resolve_pattern_name(model, load_pattern)
+    actual_case = _resolve_case_name(model, case_name)
+    _log("Resolved soil pattern:", actual_pattern)
+    _log("Resolved soil case:", actual_case)
+
     # Attach the load pattern to the case
     try:
-        # Some SAP v20 COM type libraries declare the SF array as BSTR (string),
-        # so passing floats throws: "unicode string expected instead of float instance".
-        # We'll try a couple safe variants.
-
         ret_loads = None
         err_last = None
 
-        # Variant A: lists, but SF as strings
+        patt = str(actual_pattern)
+        case_nm = str(actual_case)
+
+        # Variant A: tuples
         try:
-            ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, [str(load_pattern)], [str(1.0)])
+            ret_loads = model.LoadCases.StaticLinear.SetLoads(
+                case_nm,
+                1,
+                ("Load",),
+                (patt,),
+                (1.0,)
+            )
         except Exception as e:
             err_last = e
 
-        # Variant B: tuples, SF as strings (often better for COM SAFEARRAY)
+        # Variant B: lists
         if ret_loads is None:
             try:
-                ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, (str(load_pattern),), (str(1.0),))
+                ret_loads = model.LoadCases.StaticLinear.SetLoads(
+                    case_nm,
+                    1,
+                    ["Load"],
+                    [patt],
+                    [1.0]
+                )
             except Exception as e:
                 err_last = e
 
-        # Variant C: sometimes COM wants scalar pattern + scalar SF
+        # Variant C: scalar strings / scalar factor
         if ret_loads is None:
             try:
-                ret_loads = model.LoadCases.StaticLinear.SetLoads(case_name, 1, str(load_pattern), str(1.0))
+                ret_loads = model.LoadCases.StaticLinear.SetLoads(
+                    case_nm,
+                    1,
+                    "Load",
+                    patt,
+                    1.0
+                )
             except Exception as e:
                 err_last = e
 
-        _log("[DEBUG] StaticLinear.SetLoads:", case_name, "pattern=", load_pattern, "ret=", ret_loads)
+        _log("StaticLinear.SetLoads:", case_nm, "pattern=", patt, "ret=", ret_loads)
 
         rc = _sap_retcode(ret_loads)
-        _log("[DEBUG] StaticLinear.SetLoads retcode:", rc)
+        _log("StaticLinear.SetLoads retcode:", rc)
 
-        if rc is None or rc != 0:
-            _log("[DEBUG] StaticLinear.SetLoads FAILED -> case will not output. ret=", ret_loads)
-            return {
-                "assigned_areas": 0,
-                "failed_areas": 0,
-                "case": case_name,
-                "pattern": load_pattern,
-                "error": f"SetLoads failed ret={ret_loads}"
-            }
-
-        # If we never got a ret, it failed all signatures
         if ret_loads is None:
-            _log("[DEBUG] StaticLinear.SetLoads FAILED (all signatures). last_err=", repr(err_last))
+            _log("StaticLinear.SetLoads FAILED (all signatures). last_err=", repr(err_last))
             return {
                 "assigned_areas": 0,
                 "failed_areas": 0,
-                "case": case_name,
-                "pattern": load_pattern,
+                "case": case_nm,
+                "pattern": patt,
                 "error": f"SetLoads exception: {repr(err_last)}"
             }
 
-        # IMPORTANT: stop early if SetLoads returned nonzero
-        if isinstance(ret_loads, (int, float)) and int(ret_loads) != 0:
-            _log("[DEBUG] StaticLinear.SetLoads FAILED -> case will not output. ret=", ret_loads)
+        if rc is None or rc != 0:
+            _log("StaticLinear.SetLoads FAILED -> case will not output. ret=", ret_loads)
             return {
                 "assigned_areas": 0,
                 "failed_areas": 0,
-                "case": case_name,
-                "pattern": load_pattern,
-                "error": f"SetLoads ret={ret_loads}"
+                "case": case_nm,
+                "pattern": patt,
+                "error": f"SetLoads failed ret={ret_loads}"
             }
 
     except Exception as e:
-        _log("[DEBUG] StaticLinear.SetLoads EXC:", case_name, "err=", repr(e))
+        _log("StaticLinear.SetLoads EXC:", case_name, "err=", repr(e))
         return {
             "assigned_areas": 0,
             "failed_areas": 0,
@@ -2761,7 +2881,6 @@ def _assign_depth_based_overburden_to_all_areas(
             "pattern": load_pattern,
             "error": f"SetLoads exception: {repr(e)}"
         }
-
 
 
     # 2) Collect all joints + figure out "vertex" elevation
@@ -3054,13 +3173,17 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
             try:
                 E_mpa = float(soil.get("E_soil_mpa", 0.0))
                 vax = soil.get("axis", "Z")
-
-                springs_meta = _assign_soil_stiffness_as_base_springs(
-                    model, nodes, E_mpa, vertical_axis=vax
-                )
-
                 d_vertex = float(soil.get("burial_depth_vertex_m", 1.0))
                 gamma = float(soil.get("gamma_Npm3", 18000.0))
+
+                springs_meta = _assign_soil_stiffness_as_base_springs(
+                    model,
+                    nodes,
+                    E_mpa,
+                    vertical_axis=vax,
+                    burial_depth_vertex_m=d_vertex,
+                    kz_override_Npm3=soil.get("kz_override_Npm3"),
+                )
 
                 overburden_meta = _assign_depth_based_overburden_to_all_areas(
                     model,
