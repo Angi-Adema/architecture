@@ -982,83 +982,79 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
             return float(x), float(y), float(z)
 
         raise RuntimeError(f"Could not get coordinates for point '{pt_name}'")
-    
-        def _try_add_area_by_coord(area_obj, point_names, created_name, sec):
-            """
-            Fallback test: create area from XYZ coordinates instead of point names.
-            Returns (created, created_name, last_err)
-            """
-            xs, ys, zs = [], [], []
-            for p in point_names:
-                x, y, z = _get_point_xyz(p)
-                xs.append(float(x))
-                ys.append(float(y))
-                zs.append(float(z))
 
-            n_pts_local = len(point_names)
-            last_err = None
+    def _try_add_area_by_coord(area_obj, point_names, created_name, sec):
+        """
+        Fallback test: create area from XYZ coordinates instead of point names.
+        Returns (created, created_name, last_err)
+        """
+        xs, ys, zs = [], [], []
+        for p in point_names:
+            x, y, z = _get_point_xyz(p)
+            xs.append(float(x))
+            ys.append(float(y))
+            zs.append(float(z))
 
-            def _extract_add_area_success(res, fallback_name):
-                if isinstance(res, (int, float)):
-                    return (int(res) == 0, fallback_name, int(res))
+        n_pts_local = len(point_names)
+        last_err = None
 
-                if isinstance(res, (list, tuple)) and len(res) > 0:
-                    vals = list(res)
+        def _extract_add_area_success(res, fallback_name):
+            if isinstance(res, (int, float)):
+                return (int(res) == 0, fallback_name, int(res))
 
-                    if isinstance(vals[-1], (int, float)):
-                        ret = int(vals[-1])
-                        nm = fallback_name
-                        for v in reversed(vals[:-1]):
-                            if isinstance(v, str) and v.strip():
-                                nm = v.strip()
-                                break
-                        return (ret == 0, nm, ret)
+            if isinstance(res, (list, tuple)) and len(res) > 0:
+                vals = list(res)
 
-                    if isinstance(vals[0], (int, float)):
-                        ret = int(vals[0])
-                        nm = fallback_name
-                        for v in reversed(vals[1:]):
-                            if isinstance(v, str) and v.strip():
-                                nm = v.strip()
-                                break
-                        return (ret == 0, nm, ret)
+                if isinstance(vals[-1], (int, float)):
+                    ret = int(vals[-1])
+                    nm = fallback_name
+                    for v in reversed(vals[:-1]):
+                        if isinstance(v, str) and v.strip():
+                            nm = v.strip()
+                            break
+                    return (ret == 0, nm, ret)
 
-                return (False, fallback_name, None)
+                if isinstance(vals[0], (int, float)):
+                    ret = int(vals[0])
+                    nm = fallback_name
+                    for v in reversed(vals[1:]):
+                        if isinstance(v, str) and v.strip():
+                            nm = v.strip()
+                            break
+                    return (ret == 0, nm, ret)
 
-            coord_candidates = [
-                ("n,xs,ys,zs,name,prop",
-                (n_pts_local, xs, ys, zs, created_name, sec)),
-                ("n,xs,ys,zs,name,prop,csys",
-                (n_pts_local, xs, ys, zs, created_name, sec, "Global")),
-                ("n,xs,ys,zs,name",
-                (n_pts_local, xs, ys, zs, created_name)),
-                ("n,xs,ys,zs",
-                (n_pts_local, xs, ys, zs)),
-            ]
+            return (False, fallback_name, None)
 
-            for meth in ("AddByCoord", "AddByCoord_1", "AddByCoordinates"):
-                m = getattr(area_obj, meth, None)
-                if m is None:
-                    continue
+        coord_candidates = [
+            ("n,xs,ys,zs,name,prop", (n_pts_local, xs, ys, zs, created_name, sec)),
+            ("n,xs,ys,zs,name,prop,csys", (n_pts_local, xs, ys, zs, created_name, sec, "Global")),
+            ("n,xs,ys,zs,name", (n_pts_local, xs, ys, zs, created_name)),
+            ("n,xs,ys,zs", (n_pts_local, xs, ys, zs)),
+        ]
 
-                for sig_label, args in coord_candidates:
-                    try:
-                        _log("[DEBUG] Trying area create by coord:", "meth=", meth, "sig=", sig_label, "args=", args)
-                        res = m(*args)
-                        ok, nm, retcode = _extract_add_area_success(res, created_name)
+        for meth in ("AddByCoord", "AddByCoord_1", "AddByCoordinates"):
+            m = getattr(area_obj, meth, None)
+            if m is None:
+                continue
 
-                        if ok:
-                            _log("[DEBUG] Area created by coord:",
-                                "meth=", meth, "sig=", sig_label, "name=", nm, "ret=", retcode)
-                            return True, nm, None
+            for sig_label, args in coord_candidates:
+                try:
+                    _log("[DEBUG] Trying area create by coord:", "meth=", meth, "sig=", sig_label, "args=", args)
+                    res = m(*args)
+                    ok, nm, retcode = _extract_add_area_success(res, created_name)
 
-                        last_err = RuntimeError(
-                            f"{meth} sig={sig_label} returned unsuccessful result: {repr(res)}"
-                        )
-                    except Exception as e:
-                        last_err = e
+                    if ok:
+                        _log("[DEBUG] Area created by coord:",
+                             "meth=", meth, "sig=", sig_label, "name=", nm, "ret=", retcode)
+                        return True, nm, None
 
-            return False, created_name, last_err
+                    last_err = RuntimeError(
+                        f"{meth} sig={sig_label} returned unsuccessful result: {repr(res)}"
+                    )
+                except Exception as e:
+                    last_err = e
+
+        return False, created_name, last_err
 
     def _order_area_points_xy(point_names):
         """
@@ -1078,7 +1074,6 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
 
     def _ensure_material(mat: str):
         try:
-            # 2 is typically concrete in CSI material type enums (varies by API build)
             model.PropMaterial.SetMaterial(mat, 2)
         except Exception as e:
             raise RuntimeError(f"Failed to define material '{mat}': {repr(e)}")
@@ -1104,7 +1099,6 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                 fn(*args)
 
                 global _SHELLPROP_OK_COUNT
-
                 _SHELLPROP_OK_COUNT += 1
 
                 if _SHELLPROP_OK_COUNT <= 3:
@@ -1117,38 +1111,27 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                 if sig_mismatch(e):
                     last = (fn_name, args, e)
                     return False
-                # Real failure (not signature): surface it immediately
                 raise RuntimeError(f"{fn_name} failed (not signature): args={args} err={repr(e)}")
 
-        # We will try both SetShell and SetShell_1
         fns = ["SetShell", "SetShell_1"]
 
-        # ---------- A) Variants where arg2 is material (older/newer simple builds) ----------
         for fn in fns:
             candidates = [
-                (sec, mat, 0.0, float(t), 0, "", ""),   # (Name, MatProp, MatAng, Thick, Color, Notes, GUID)
-                (sec, mat, 0.0, float(t)),              # (Name, MatProp, MatAng, Thick)
+                (sec, mat, 0.0, float(t), 0, "", ""),
+                (sec, mat, 0.0, float(t)),
             ]
             for args in candidates:
                 if try_call(fn, args):
                     return
 
-        # ---------- B) Variants where arg2 is ShellType (int) ----------
         for fn in fns:
             for st in shell_types:
                 candidates = [
-                    # Most likely for your build (arg4 is Notes/string)
-                    # (Name, ShellType, MatProp, Notes, MatAng, Thickness, Color, GUID)
                     (sec, int(st), mat, "", 0.0, float(t), 0, ""),
-
-                    # Variant where GUID may be required as a string, but you also need a Notes2 slot:
-                    # (Name, ShellType, MatProp, Notes, MatAng, Thickness, Color, Notes2, GUID)
                     (sec, int(st), mat, "", 0.0, float(t), 0, "", ""),
-
-                    # 9-arg style where arg4 is Notes (string) and arg7 must be float
-                    (sec, int(st), mat, "", 0.0, float(t), float(t), 0, ""),  # arg6 & arg7 both floats
-                    (sec, int(st), mat, "", 0.0, float(t), 0.0,     0, ""),  # arg7 float, maybe "extra thickness" = 0
-                    (sec, int(st), mat, "", 0.0, 0.0,     float(t), 0, ""),  # thickness might actually be arg7
+                    (sec, int(st), mat, "", 0.0, float(t), float(t), 0, ""),
+                    (sec, int(st), mat, "", 0.0, float(t), 0.0, 0, ""),
+                    (sec, int(st), mat, "", 0.0, 0.0, float(t), 0, ""),
                 ]
 
                 for args in candidates:
@@ -1161,7 +1144,37 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
             f"Last tried: {fn}{args} err={repr(err)}"
         )
 
-    # Ensure the default baseline exists
+    def _extract_add_area_success(res, fallback_name):
+        """
+        Normalize AddByPoint-style returns.
+        Accept success only when ret == 0.
+        """
+        if isinstance(res, (int, float)):
+            return (int(res) == 0, fallback_name, int(res))
+
+        if isinstance(res, (list, tuple)) and len(res) > 0:
+            vals = list(res)
+
+            if isinstance(vals[-1], (int, float)):
+                ret = int(vals[-1])
+                nm = fallback_name
+                for v in reversed(vals[:-1]):
+                    if isinstance(v, str) and v.strip():
+                        nm = v.strip()
+                        break
+                return (ret == 0, nm, ret)
+
+            if isinstance(vals[0], (int, float)):
+                ret = int(vals[0])
+                nm = fallback_name
+                for v in reversed(vals[1:]):
+                    if isinstance(v, str) and v.strip():
+                        nm = v.strip()
+                        break
+                return (ret == 0, nm, ret)
+
+        return (False, fallback_name, None)
+
     _ensure_material(mat_name)
     _ensure_shell_prop(sec_name, mat_name, float(thick_m))
 
@@ -1177,82 +1190,25 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
         sec = str(r["Section"]).strip() if pd.notna(r["Section"]) else sec_name
         mat = str(r["Material"]).strip() if pd.notna(r["Material"]) else mat_name
 
-        # If the row requests a material, ensure it exists
         if pd.notna(r["Material"]):
             _ensure_material(mat)
 
-        # Ensure the requested shell property exists
         _ensure_shell_prop(sec, mat, float(thick_m))
 
-        # Points
         if p4 is None or (isinstance(p4, float) and pd.isna(p4)) or str(p4).strip() == "":
             point_names = [p1, p2, p3]
         else:
             point_names = [p1, p2, p3, str(p4).strip()]
 
-        # Reorder points around perimeter
         point_names = _order_area_points_xy(point_names)
-
-        # TEMP DIAGNOSTIC: force first area to triangle
-        if str(name).strip() == "1_1" and len(point_names) == 4:
-            point_names = point_names[:3]
-            _log("[DEBUG] TRIANGLE TEST active for area 1_1")
-
         _log("[DEBUG] Ordered area points:", "area=", name, "pts=", point_names)
 
         n_pts = len(point_names)
-
         created_name = name
         created = False
         last_err = None
 
-        def _extract_add_area_success(res, fallback_name):
-            """
-            Normalize AddByPoint-style returns.
-            Accept success only when ret == 0.
-
-            Common shapes seen across CSI COM builds:
-              ret
-              (ret, name)
-              (name, ret)
-              (..., ret)
-            """
-            if isinstance(res, (int, float)):
-                return (int(res) == 0, fallback_name, int(res))
-
-            if isinstance(res, (list, tuple)) and len(res) > 0:
-                vals = list(res)
-
-                # trailing ret is most common in odd COM wrappers
-                if isinstance(vals[-1], (int, float)):
-                    ret = int(vals[-1])
-
-                    # try to find a reasonable created-name candidate
-                    nm = fallback_name
-                    for v in reversed(vals[:-1]):
-                        if isinstance(v, str) and v.strip():
-                            nm = v.strip()
-                            break
-
-                    return (ret == 0, nm, ret)
-
-                # leading ret
-                if isinstance(vals[0], (int, float)):
-                    ret = int(vals[0])
-
-                    nm = fallback_name
-                    for v in reversed(vals[1:]):
-                        if isinstance(v, str) and v.strip():
-                            nm = v.strip()
-                            break
-
-                    return (ret == 0, nm, ret)
-
-            return (False, fallback_name, None)
-
-        # Try multiple possible CSI AddByPoint orders/signatures
         add_candidates = [
-            # Most likely for this build: no n_pts argument
             ("pts, out_name_blank, prop, user_name, csys",
              (point_names, "", sec, created_name, "Global")),
 
@@ -1274,7 +1230,6 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
             ("pts, prop",
              (point_names, sec)),
 
-            # Keep count-based fallbacks after the no-count versions
             ("n_pts, pts, out_name_blank, prop, user_name, csys",
              (n_pts, point_names, "", sec, created_name, "Global")),
 
@@ -1345,7 +1300,6 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                     f"Last AddByPoint err={repr(last_err)} ; Last AddByCoord err={repr(coord_err)}"
                 )
 
-        # CRITICAL: Assign the property to the area (do not swallow)
         try:
             area.SetProperty(created_name, sec)
         except Exception as e:
