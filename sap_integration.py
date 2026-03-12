@@ -910,9 +910,14 @@ def _build_model_from_excel(model, nodes_df, elems_df,
     for _, r in nodes_df.iterrows():
         name, x, y, z = r["Name"], r["X"], r["Y"], r["Z"]
         try:
-            model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
-        except Exception:
-            pass
+            ret = model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
+            if isinstance(ret, (list, tuple)):
+                ret = ret[-1]
+            if ret not in (0, None):
+                _log("[DEBUG] Re‑trying AddCartesian for", name, "ret=", ret)
+                model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
+        except Exception as e:
+            _log("[DEBUG] AddCartesian failed for", name, "err=", repr(e))
 
     # Frames
     b, h = map(float, dims)
