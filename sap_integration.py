@@ -982,6 +982,83 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
             return float(x), float(y), float(z)
 
         raise RuntimeError(f"Could not get coordinates for point '{pt_name}'")
+    
+        def _try_add_area_by_coord(area_obj, point_names, created_name, sec):
+            """
+            Fallback test: create area from XYZ coordinates instead of point names.
+            Returns (created, created_name, last_err)
+            """
+            xs, ys, zs = [], [], []
+            for p in point_names:
+                x, y, z = _get_point_xyz(p)
+                xs.append(float(x))
+                ys.append(float(y))
+                zs.append(float(z))
+
+            n_pts_local = len(point_names)
+            last_err = None
+
+            def _extract_add_area_success(res, fallback_name):
+                if isinstance(res, (int, float)):
+                    return (int(res) == 0, fallback_name, int(res))
+
+                if isinstance(res, (list, tuple)) and len(res) > 0:
+                    vals = list(res)
+
+                    if isinstance(vals[-1], (int, float)):
+                        ret = int(vals[-1])
+                        nm = fallback_name
+                        for v in reversed(vals[:-1]):
+                            if isinstance(v, str) and v.strip():
+                                nm = v.strip()
+                                break
+                        return (ret == 0, nm, ret)
+
+                    if isinstance(vals[0], (int, float)):
+                        ret = int(vals[0])
+                        nm = fallback_name
+                        for v in reversed(vals[1:]):
+                            if isinstance(v, str) and v.strip():
+                                nm = v.strip()
+                                break
+                        return (ret == 0, nm, ret)
+
+                return (False, fallback_name, None)
+
+            coord_candidates = [
+                ("n,xs,ys,zs,name,prop",
+                (n_pts_local, xs, ys, zs, created_name, sec)),
+                ("n,xs,ys,zs,name,prop,csys",
+                (n_pts_local, xs, ys, zs, created_name, sec, "Global")),
+                ("n,xs,ys,zs,name",
+                (n_pts_local, xs, ys, zs, created_name)),
+                ("n,xs,ys,zs",
+                (n_pts_local, xs, ys, zs)),
+            ]
+
+            for meth in ("AddByCoord", "AddByCoord_1", "AddByCoordinates"):
+                m = getattr(area_obj, meth, None)
+                if m is None:
+                    continue
+
+                for sig_label, args in coord_candidates:
+                    try:
+                        _log("[DEBUG] Trying area create by coord:", "meth=", meth, "sig=", sig_label, "args=", args)
+                        res = m(*args)
+                        ok, nm, retcode = _extract_add_area_success(res, created_name)
+
+                        if ok:
+                            _log("[DEBUG] Area created by coord:",
+                                "meth=", meth, "sig=", sig_label, "name=", nm, "ret=", retcode)
+                            return True, nm, None
+
+                        last_err = RuntimeError(
+                            f"{meth} sig={sig_label} returned unsuccessful result: {repr(res)}"
+                        )
+                    except Exception as e:
+                        last_err = e
+
+            return False, created_name, last_err
 
     def _order_area_points_xy(point_names):
         """
@@ -1256,9 +1333,17 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
                 break
 
         if not created:
-            raise RuntimeError(
-                f"Failed to create area '{name}' with points {point_names}. Last err={repr(last_err)}"
-            )
+            _log("[DEBUG] AddByPoint failed for area, trying AddByCoord fallback:", name)
+
+            created2, created_name2, coord_err = _try_add_area_by_coord(area, point_names, created_name, sec)
+            if created2:
+                created = True
+                created_name = created_name2
+            else:
+                raise RuntimeError(
+                    f"Failed to create area '{name}' with points {point_names}. "
+                    f"Last AddByPoint err={repr(last_err)} ; Last AddByCoord err={repr(coord_err)}"
+                )
 
         # CRITICAL: Assign the property to the area (do not swallow)
         try:
