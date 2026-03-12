@@ -890,7 +890,9 @@ def _build_model_from_excel(model, nodes_df, elems_df,
     nodes_df columns: Name, X, Y, Z
     elems_df columns: Frame, I, J, Section (opt), Material (opt)
     """
+    _log("[DEBUG] _build_model_from_excel received nodes:", len(nodes_df)) 
     sec_name, mat_name, dims = default_section
+    
     _ensure_default_section(model, sec_name, mat_name, dims)
 
     def _point_exists(pt_name: str) -> bool:
@@ -3386,6 +3388,7 @@ def run_sap2000_analysis(input_xlsx, visible=True, close_after=False, soil=None,
 
     # ---- read Excel ----
     nodes_in = _read_nodes_sheet(input_xlsx)
+    _log("[DEBUG] nodes_in from Excel:", len(nodes_in))  # ADD THIS LINE
     elems_in = _read_elements_sheet(input_xlsx)
 
     try:
