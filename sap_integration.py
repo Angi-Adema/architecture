@@ -911,11 +911,16 @@ def _build_model_from_excel(model, nodes_df, elems_df,
         name, x, y, z = r["Name"], r["X"], r["Y"], r["Z"]
         try:
             ret = model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
+            # Normalize COM return (tuple or int)
             if isinstance(ret, (list, tuple)):
                 ret = ret[-1]
             if ret not in (0, None):
-                _log("[DEBUG] Re‑trying AddCartesian for", name, "ret=", ret)
-                model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
+                _log("[DEBUG] Retrying AddCartesian for", name, "ret=", ret)
+                # Retry once more in case COM failed the first time
+                ret2 = model.PointObj.AddCartesian(float(x), float(y), float(z), str(name))
+                _log("[DEBUG] Retry ret=", ret2)
+            # Small delay to let SAP register the point
+            time.sleep(0.002)
         except Exception as e:
             _log("[DEBUG] AddCartesian failed for", name, "err=", repr(e))
 
