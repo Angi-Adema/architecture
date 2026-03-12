@@ -1180,6 +1180,8 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
 
     _log("[DEBUG] Shell property ensured:", sec_name, mat_name, thick_m)
 
+    _log("[DEBUG] Available points before building areas:", _get_all_point_names(model)[:20])
+
     for i, (_, r) in enumerate(areas_df.iterrows()):
         name = str(r["Area"]).strip()
         p1 = str(r["P1"]).strip()
