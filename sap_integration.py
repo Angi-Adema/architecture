@@ -1113,8 +1113,14 @@ def _build_areas_from_excel(model, areas_df, default_section=("SHELL_200", "CONC
         else:
             point_names = [p1, p2, p3, str(p4).strip()]
 
-        # Reorder points around perimeter to avoid crossed quads
+        # Reorder points around perimeter
         point_names = _order_area_points_xy(point_names)
+
+        # TEMP DIAGNOSTIC: force first area to triangle
+        if str(name).strip() == "1_1" and len(point_names) == 4:
+            point_names = point_names[:3]
+            _log("[DEBUG] TRIANGLE TEST active for area 1_1")
+
         _log("[DEBUG] Ordered area points:", "area=", name, "pts=", point_names)
 
         n_pts = len(point_names)
