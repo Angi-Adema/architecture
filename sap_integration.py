@@ -663,7 +663,7 @@ def _read_nodes_sheet(input_xlsx):
         "Z": df.iloc[:, z_col].astype(float),
     })
 
-    out = out[out["Name"].notna() & (out["Name"] != "")]
+    out = out[out["Name"].notna() & (out["Name"] != "") & (out["Name"].astype(str).str.strip() != "")].copy()
     return out
 
 
